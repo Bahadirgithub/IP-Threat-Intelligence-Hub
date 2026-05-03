@@ -43,14 +43,13 @@ def fetch_blacklist() -> pd.DataFrame:
 
     # Rename columns to snake_case
     df.rename(columns={
-        "ipAddress":            "ip",
-        "abuseConfidenceScore": "abuse_score",
-        "countryCode":          "country_code",
-        "usageType":            "usage_type",
-        "totalReports":         "total_reports",
-        "numDistinctUsers":     "num_distinct_users",
-        "lastReportedAt":       "last_reported_at",
-    }, inplace=True)
+    "ipAddress":            "ip",
+    "abuseConfidenceScore": "abuse_score",
+    "countryCode":          "country_code",
+    "totalReports":         "total_reports",
+    "numDistinctUsers":     "num_distinct_users",
+    "lastReportedAt":       "last_reported_at",
+}, inplace=True)
 
     # Parse datetime
     df["last_reported_at"] = pd.to_datetime(df["last_reported_at"], utc=True, errors="coerce")
@@ -59,12 +58,6 @@ def fetch_blacklist() -> pd.DataFrame:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
     df = df[df["last_reported_at"] >= cutoff].copy()
 
-    # Clean nulls
-    for col, default in [("usage_type", "Unknown"), ("country_code", "XX"),
-                         ("isp", "Unknown"), ("domain", "—")]:
-        if col not in df.columns:
-            df[col] = default
-        else:
-            df[col] = df[col].fillna(default)
+    df["country_code"] = df["country_code"].fillna("XX")
 
     return df.reset_index(drop=True)
