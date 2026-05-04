@@ -13,16 +13,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 API_KEY = os.getenv("PROXYCHECK_API_KEY")
-BATCH_SIZE = 100
+BATCH_SIZE = 1000
 
 
 def enrich(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Takes DataFrame from ingestion.py.
-    Queries proxy-check.io for all IPs in batches of 100.
-    Returns original DataFrame with new columns added.
-    """
-
     if df.empty:
         return df
 
@@ -41,11 +35,6 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _query_batch(ips: list) -> dict:
-    """
-    Sends a batch of up to 100 IPs to proxy-check.io.
-    Returns dict: { ip: { attribute: value, ... } }
-    """
-
     try:
         response = requests.post(
             "https://proxycheck.io/v2/",
@@ -54,11 +43,9 @@ def _query_batch(ips: list) -> dict:
                 "vpn": 1,
                 "asn": 1,
                 "risk": 1,
-                "port": 1,
                 "seen": 1,
-                "days": 1,
             },
-            data={"ips": "\n".join(ips)},
+            data={"ips": ",".join(ips)},
             timeout=30,
         )
         response.raise_for_status()
@@ -75,26 +62,25 @@ def _query_batch(ips: list) -> dict:
             continue
 
         results[ip] = {
-            "pc_proxy":        ip_data.get("proxy", "unknown"),
-            "pc_vpn":          ip_data.get("vpn", "unknown"),
-            "pc_type":         ip_data.get("type", "unknown"),
-            "pc_risk":         ip_data.get("risk", None),
-            "pc_isp":          ip_data.get("isp", "unknown"),
-            "pc_provider":     ip_data.get("provider", "unknown"),
-            "pc_continent":    ip_data.get("continent", "unknown"),
-            "pc_country":      ip_data.get("country", "unknown"),
-            "pc_isocode":      ip_data.get("isocode", "unknown"),
-            "pc_region":       ip_data.get("region", "unknown"),
-            "pc_regioncode":   ip_data.get("regioncode", "unknown"),
-            "pc_city":         ip_data.get("city", "unknown"),
-            "pc_postcode":     ip_data.get("postcode", "unknown"),
-            "pc_latitude":     ip_data.get("latitude", None),
-            "pc_longitude":    ip_data.get("longitude", None),
-            "pc_asn":          ip_data.get("asn", "unknown"),
-            "pc_organisation": ip_data.get("organisation", "unknown"),
-            "pc_last_seen":    ip_data.get("last seen human", "unknown"),
-            "pc_days_since":   ip_data.get("days since last seen", None),
-            "pc_port":         ip_data.get("port", "unknown"),
+            "pc_proxy":         ip_data.get("proxy", "unknown"),
+            "pc_type":          ip_data.get("type", "unknown"),
+            "pc_risk":          ip_data.get("risk", None),
+            "pc_provider":      ip_data.get("provider", "unknown"),
+            "pc_organisation":  ip_data.get("organisation", "unknown"),
+            "pc_continent":     ip_data.get("continent", "unknown"),
+            "pc_continentcode": ip_data.get("continentcode", "unknown"),
+            "pc_country":       ip_data.get("country", "unknown"),
+            "pc_isocode":       ip_data.get("isocode", "unknown"),
+            "pc_region":        ip_data.get("region", "unknown"),
+            "pc_regioncode":    ip_data.get("regioncode", "unknown"),
+            "pc_timezone":      ip_data.get("timezone", "unknown"),
+            "pc_city":          ip_data.get("city", "unknown"),
+            "pc_postcode":      ip_data.get("postcode", "unknown"),
+            "pc_latitude":      ip_data.get("latitude", None),
+            "pc_longitude":     ip_data.get("longitude", None),
+            "pc_asn":           ip_data.get("asn", "unknown"),
+            "pc_range":         ip_data.get("range", "unknown"),
+            "pc_last_seen":     ip_data.get("last seen human", "unknown"),
         }
 
     return results
@@ -102,11 +88,12 @@ def _query_batch(ips: list) -> dict:
 
 def _empty_row() -> dict:
     return {
-        "pc_proxy": "unknown", "pc_vpn": "unknown", "pc_type": "unknown",
-        "pc_risk": None, "pc_isp": "unknown", "pc_provider": "unknown",
-        "pc_continent": "unknown", "pc_country": "unknown", "pc_isocode": "unknown",
-        "pc_region": "unknown", "pc_regioncode": "unknown", "pc_city": "unknown",
+        "pc_proxy": "unknown", "pc_type": "unknown", "pc_risk": None,
+        "pc_provider": "unknown", "pc_organisation": "unknown",
+        "pc_continent": "unknown", "pc_continentcode": "unknown",
+        "pc_country": "unknown", "pc_isocode": "unknown",
+        "pc_region": "unknown", "pc_regioncode": "unknown",
+        "pc_timezone": "unknown", "pc_city": "unknown",
         "pc_postcode": "unknown", "pc_latitude": None, "pc_longitude": None,
-        "pc_asn": "unknown", "pc_organisation": "unknown",
-        "pc_last_seen": "unknown", "pc_days_since": None, "pc_port": "unknown",
+        "pc_asn": "unknown", "pc_range": "unknown", "pc_last_seen": "unknown",
     }
