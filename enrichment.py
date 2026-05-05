@@ -62,6 +62,7 @@ def _query_batch(ips: list) -> dict:
             continue
 
         results[ip] = {
+            "pc_hostname": ip_data.get("hostname", "unknown"),
             "pc_proxy":         ip_data.get("proxy", "unknown"),
             "pc_type":          ip_data.get("type", "unknown"),
             "pc_risk":          ip_data.get("risk", None),
@@ -88,6 +89,7 @@ def _query_batch(ips: list) -> dict:
 
 def _empty_row() -> dict:
     return {
+        "pc_hostname": "unknown",
         "pc_proxy": "unknown", "pc_type": "unknown", "pc_risk": None,
         "pc_provider": "unknown", "pc_organisation": "unknown",
         "pc_continent": "unknown", "pc_continentcode": "unknown",
