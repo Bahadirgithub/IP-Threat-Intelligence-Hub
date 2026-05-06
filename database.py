@@ -38,8 +38,8 @@ def init_db():
             pc_hostname         TEXT,
             pc_continent        TEXT,
             pc_country          TEXT,
-            pc_isocode          TEXT,
-            pc_region           TEXT,
+           
+           
             pc_city             TEXT,
             pc_asn              TEXT,
             pc_range            TEXT,
@@ -100,8 +100,8 @@ def save(df: pd.DataFrame):
                     ip, abuse_score, country_code, total_reports,
                     num_distinct_users, last_reported_at,
                     pc_proxy, pc_type, pc_risk, pc_provider, pc_organisation,
-                    pc_hostname, pc_continent, pc_country, pc_isocode,
-                    pc_region, pc_city, pc_asn, pc_range, pc_last_seen
+                    pc_hostname, pc_continent, pc_country,
+                    pc_city, pc_asn, pc_range, pc_last_seen
                 ) VALUES (
                     ?, ?, 1,
                     ?, ?, ?, ?,
@@ -126,8 +126,8 @@ def save(df: pd.DataFrame):
                 pc_hostname,
                 row.get("pc_continent"),
                 row.get("pc_country"),
-                row.get("pc_isocode"),
-                row.get("pc_region"),
+
+
                 row.get("pc_city"),
                 row.get("pc_asn"),
                 row.get("pc_range"),

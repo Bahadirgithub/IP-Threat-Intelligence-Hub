@@ -69,16 +69,16 @@ def _query_batch(ips: list) -> dict:
             "pc_provider":      ip_data.get("provider", "unknown"),
             "pc_organisation":  ip_data.get("organisation", "unknown"),
             "pc_continent":     ip_data.get("continent", "unknown"),
-            "pc_continentcode": ip_data.get("continentcode", "unknown"),
+
             "pc_country":       ip_data.get("country", "unknown"),
-            "pc_isocode":       ip_data.get("isocode", "unknown"),
-            "pc_region":        ip_data.get("region", "unknown"),
-            "pc_regioncode":    ip_data.get("regioncode", "unknown"),
-            "pc_timezone":      ip_data.get("timezone", "unknown"),
+
+
             "pc_city":          ip_data.get("city", "unknown"),
-            "pc_postcode":      ip_data.get("postcode", "unknown"),
-            "pc_latitude":      ip_data.get("latitude", None),
-            "pc_longitude":     ip_data.get("longitude", None),
+            "pc_operator_name":     ip_data.get("operator", {}).get("name", "unknown") if isinstance(ip_data.get("operator"), dict) else "unknown",
+            "pc_operator_url":      ip_data.get("operator", {}).get("url", "unknown") if isinstance(ip_data.get("operator"), dict) else "unknown",
+            "pc_operator_anonymity":ip_data.get("operator", {}).get("anonymity", "unknown") if isinstance(ip_data.get("operator"), dict) else "unknown",
+            "pc_operator_popularity":ip_data.get("operator", {}).get("popularity", "unknown") if isinstance(ip_data.get("operator"), dict) else "unknown",
+
             "pc_asn":           ip_data.get("asn", "unknown"),
             "pc_range":         ip_data.get("range", "unknown"),
             "pc_last_seen":     ip_data.get("last seen human", "unknown"),
@@ -89,13 +89,22 @@ def _query_batch(ips: list) -> dict:
 
 def _empty_row() -> dict:
     return {
-        "pc_hostname": "unknown",
-        "pc_proxy": "unknown", "pc_type": "unknown", "pc_risk": None,
-        "pc_provider": "unknown", "pc_organisation": "unknown",
-        "pc_continent": "unknown", "pc_continentcode": "unknown",
-        "pc_country": "unknown", "pc_isocode": "unknown",
-        "pc_region": "unknown", "pc_regioncode": "unknown",
-        "pc_timezone": "unknown", "pc_city": "unknown",
-        "pc_postcode": "unknown", "pc_latitude": None, "pc_longitude": None,
-        "pc_asn": "unknown", "pc_range": "unknown", "pc_last_seen": "unknown",
+        "pc_hostname":      "unknown",
+        "pc_proxy":         "unknown",
+        "pc_type":          "unknown",
+        "pc_risk":          None,
+        "pc_provider":      "unknown",
+        "pc_organisation":  "unknown",
+        "pc_continent":     "unknown",
+        "pc_country":       "unknown",
+
+
+        "pc_city":          "unknown",
+        "pc_operator_name":      "unknown",
+        "pc_operator_url":       "unknown",
+        "pc_operator_anonymity": "unknown",
+        "pc_operator_popularity":"unknown",
+        "pc_asn":           "unknown",
+        "pc_range":         "unknown",
+        "pc_last_seen":     "unknown",
     }
