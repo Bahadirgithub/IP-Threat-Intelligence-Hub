@@ -1,8 +1,8 @@
 """
 enrichment.py
 -------------
-Sole responsibility: enrich IPs from ingestion.py
-using proxy-check.io API in batches of 100.
+Enriches IPs from ingestion.py using proxy-check.io API.
+Returns original API field names.
 """
 
 import os
@@ -20,15 +20,14 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    ips = df["ip"].tolist()
+    ips = df["ipAddress"].tolist()
     results = {}
 
     for i in range(0, len(ips), BATCH_SIZE):
         batch = ips[i:i + BATCH_SIZE]
-        batch_results = _query_batch(batch)
-        results.update(batch_results)
+        results.update(_query_batch(batch))
 
-    enriched_rows = [results.get(ip, {}) for ip in ips]
+    enriched_rows = [results.get(ip, _empty_row()) for ip in ips]
     enriched_df = pd.DataFrame(enriched_rows, index=df.index)
 
     return pd.concat([df, enriched_df], axis=1)
@@ -50,7 +49,6 @@ def _query_batch(ips: list) -> dict:
         )
         response.raise_for_status()
         data = response.json()
-        print("API RESPONSE:", data)
     except Exception as e:
         raise RuntimeError(f"proxy-check.io error: {e}")
 
@@ -61,27 +59,24 @@ def _query_batch(ips: list) -> dict:
             results[ip] = _empty_row()
             continue
 
+        operator = ip_data.get("operator", {}) or {}
+
         results[ip] = {
-            "pc_hostname": ip_data.get("hostname", "unknown"),
-            "pc_proxy":         ip_data.get("proxy", "unknown"),
-            "pc_type":          ip_data.get("type", "unknown"),
-            "pc_risk":          ip_data.get("risk", None),
-            "pc_provider":      ip_data.get("provider", "unknown"),
-            "pc_organisation":  ip_data.get("organisation", "unknown"),
-            "pc_continent":     ip_data.get("continent", "unknown"),
-
-            "pc_country":       ip_data.get("country", "unknown"),
-
-
-            "pc_city":          ip_data.get("city", "unknown"),
-            "pc_operator_name":     ip_data.get("operator", {}).get("name", "unknown") if isinstance(ip_data.get("operator"), dict) else "unknown",
-            "pc_operator_url":      ip_data.get("operator", {}).get("url", "unknown") if isinstance(ip_data.get("operator"), dict) else "unknown",
-            "pc_operator_anonymity":ip_data.get("operator", {}).get("anonymity", "unknown") if isinstance(ip_data.get("operator"), dict) else "unknown",
-            "pc_operator_popularity":ip_data.get("operator", {}).get("popularity", "unknown") if isinstance(ip_data.get("operator"), dict) else "unknown",
-
-            "pc_asn":           ip_data.get("asn", "unknown"),
-            "pc_range":         ip_data.get("range", "unknown"),
-            "pc_last_seen":     ip_data.get("last seen human", "unknown"),
+            "hostname":           ip_data.get("hostname", "unknown"),
+            "proxy":              ip_data.get("proxy", "unknown"),
+            "type":               ip_data.get("type", "unknown"),
+            "risk":               ip_data.get("risk", None),
+            "provider":           ip_data.get("provider", "unknown"),
+            "organisation":       ip_data.get("organisation", "unknown"),
+            "country":            ip_data.get("country", "unknown"),
+            "city":               ip_data.get("city", "unknown"),
+            "asn":                ip_data.get("asn", "unknown"),
+            "range":              ip_data.get("range", "unknown"),
+            "last seen":          ip_data.get("last seen human", "unknown"),
+            "operator name":      operator.get("name", "unknown"),
+            "operator url":       operator.get("url", "unknown"),
+            "operator anonymity": operator.get("anonymity", "unknown"),
+            "operator popularity":operator.get("popularity", "unknown"),
         }
 
     return results
@@ -89,22 +84,19 @@ def _query_batch(ips: list) -> dict:
 
 def _empty_row() -> dict:
     return {
-        "pc_hostname":      "unknown",
-        "pc_proxy":         "unknown",
-        "pc_type":          "unknown",
-        "pc_risk":          None,
-        "pc_provider":      "unknown",
-        "pc_organisation":  "unknown",
-        "pc_continent":     "unknown",
-        "pc_country":       "unknown",
-
-
-        "pc_city":          "unknown",
-        "pc_operator_name":      "unknown",
-        "pc_operator_url":       "unknown",
-        "pc_operator_anonymity": "unknown",
-        "pc_operator_popularity":"unknown",
-        "pc_asn":           "unknown",
-        "pc_range":         "unknown",
-        "pc_last_seen":     "unknown",
+        "hostname":            "unknown",
+        "proxy":               "unknown",
+        "type":                "unknown",
+        "risk":                None,
+        "provider":            "unknown",
+        "organisation":        "unknown",
+        "country":             "unknown",
+        "city":                "unknown",
+        "asn":                 "unknown",
+        "range":               "unknown",
+        "last seen":           "unknown",
+        "operator name":       "unknown",
+        "operator url":        "unknown",
+        "operator anonymity":  "unknown",
+        "operator popularity": "unknown",
     }
