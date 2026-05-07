@@ -1,8 +1,8 @@
 """
 ingestion.py
 ------------
-Sole responsibility: fetch IPs with abuse score 100
-from AbuseIPDB and return them as a clean DataFrame.
+Fetches IPs with abuse score 100 from AbuseIPDB.
+Returns a clean DataFrame with original API field names.
 """
 
 import os
@@ -17,12 +17,6 @@ API_KEY = os.getenv("ABUSEIPDB_API_KEY")
 
 
 def fetch_blacklist() -> pd.DataFrame:
-    """
-    Fetches IPs with confidence score 100 from AbuseIPDB.
-    Filters to last 24 hours based on lastReportedAt.
-    Returns a clean DataFrame, or empty DataFrame on error.
-    """
-
     if not API_KEY:
         raise ValueError("ABUSEIPDB_API_KEY not found in .env")
 
@@ -35,29 +29,20 @@ def fetch_blacklist() -> pd.DataFrame:
     response.raise_for_status()
 
     raw = response.json().get("data", [])
-
     if not raw:
         return pd.DataFrame()
 
     df = pd.DataFrame(raw)
 
-    # Rename columns to snake_case
-    df.rename(columns={
-    "ipAddress":            "ip",
-    "abuseConfidenceScore": "abuse_score",
-    "countryCode":          "country_code",
-    "totalReports":         "total_reports",
-    "numDistinctUsers":     "num_distinct_users",
-    "lastReportedAt":       "last_reported_at",
-}, inplace=True)
+    # Keep only needed columns
+    keep = ["ipAddress", "abuseConfidenceScore", "lastReportedAt",
+            "totalReports", "numDistinctUsers"]
+    df = df[[c for c in keep if c in df.columns]]
 
-    # Parse datetime
-    df["last_reported_at"] = pd.to_datetime(df["last_reported_at"], utc=True, errors="coerce")
+    df["lastReportedAt"] = pd.to_datetime(df["lastReportedAt"], utc=True, errors="coerce")
 
     # Filter: last 24 hours only
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-    df = df[df["last_reported_at"] >= cutoff].copy()
-
-    df["country_code"] = df["country_code"].fillna("XX")
+    df = df[df["lastReportedAt"] >= cutoff].copy()
 
     return df.reset_index(drop=True)
