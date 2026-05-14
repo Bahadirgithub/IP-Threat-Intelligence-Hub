@@ -1,10 +1,3 @@
-"""
-ingestion.py
-------------
-Fetches IPs with abuse score 100 from AbuseIPDB.
-Returns a clean DataFrame with original API field names.
-"""
-
 import os
 import requests
 import pandas as pd
@@ -15,8 +8,8 @@ load_dotenv()
 
 API_KEY = os.getenv("ABUSEIPDB_API_KEY")
 
-
 def fetch_blacklist() -> pd.DataFrame:
+    """Fetches IPs with abuse score 100 from AbuseIPDB and filters for the last 24h."""
     if not API_KEY:
         raise ValueError("ABUSEIPDB_API_KEY not found in .env")
 
@@ -34,7 +27,7 @@ def fetch_blacklist() -> pd.DataFrame:
 
     df = pd.DataFrame(raw)
 
-    # Keep only needed columns
+    # Keep only needed columns as per original code
     keep = ["ipAddress", "abuseConfidenceScore", "lastReportedAt",
             "totalReports", "numDistinctUsers"]
     df = df[[c for c in keep if c in df.columns]]

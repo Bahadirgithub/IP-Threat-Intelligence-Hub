@@ -2,8 +2,7 @@
 database.py
 -----------
 Stores and retrieves IP records from SQLite.
-Same record = same ipAddress + provider + organisation + hostname +
-              proxy + vpn + scraper + tor + hosting + anonymous
+Uses INSERT OR REPLACE for simplicity.
 """
 
 import sqlite3
@@ -17,10 +16,7 @@ def init_db():
     con = sqlite3.connect(DB_PATH)
     con.execute("""
         CREATE TABLE IF NOT EXISTS ip_records (
-            -- Tracking
-            first_seen_db               TEXT,
             last_seen_db                TEXT,
-            times_seen                  INTEGER DEFAULT 1,
 
             -- AbuseIPDB
             ipAddress                   TEXT,
@@ -83,12 +79,20 @@ def init_db():
             policy_crypto_payments      INTEGER,
             policy_traceable_ownership  INTEGER,
 
-            PRIMARY KEY (
-                ipAddress, provider, organisation, hostname,
-                proxy, vpn, scraper, tor, hosting, anonymous
-            )
+            PRIMARY KEY (ipAddress, provider, organisation, hostname, proxy, vpn, tor, hosting)
         )
     """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS whitelist_matches (
+            ipAddress   TEXT PRIMARY KEY,
+            asn         TEXT,
+            provider    TEXT,
+            organisation TEXT,
+            matched_at  TEXT
+        )
+    """)
+
     con.commit()
     con.close()
 
@@ -102,133 +106,120 @@ def save(df: pd.DataFrame):
     con = sqlite3.connect(DB_PATH)
 
     for _, row in df.iterrows():
-        ip        = row.get("ipAddress", "unknown")
-        provider  = row.get("provider")      or "unknown"
-        org       = row.get("organisation")  or "unknown"
-        hostname  = row.get("hostname")      or "unknown"
-        proxy     = row.get("proxy")
-        vpn       = row.get("vpn")
-        scraper   = row.get("scraper")
-        tor       = row.get("tor")
-        hosting   = row.get("hosting")
-        anonymous = row.get("anonymous")
+        ip   = row.get("ipAddress")
+        prov = row.get("provider")      or "unknown"
+        org  = row.get("organisation")  or "unknown"
+        host = row.get("hostname")      or "unknown"
 
-        existing = con.execute("""
-            SELECT times_seen FROM ip_records
-            WHERE ipAddress    = ?
-              AND provider     = ?
-              AND organisation = ?
-              AND hostname     = ?
-              AND proxy     IS ?
-              AND vpn       IS ?
-              AND scraper   IS ?
-              AND tor       IS ?
-              AND hosting   IS ?
-              AND anonymous IS ?
-        """, (ip, provider, org, hostname,
-              proxy, vpn, scraper, tor, hosting, anonymous)).fetchone()
+        proxy     = int(row.get("proxy"))     if pd.notna(row.get("proxy"))     else 0
+        vpn       = int(row.get("vpn"))       if pd.notna(row.get("vpn"))       else 0
+        tor       = int(row.get("tor"))       if pd.notna(row.get("tor"))       else 0
+        hosting   = int(row.get("hosting"))   if pd.notna(row.get("hosting"))   else 0
 
-        if existing:
-            con.execute("""
-                UPDATE ip_records
-                SET last_seen_db   = ?,
-                    lastReportedAt = ?,
-                    times_seen     = times_seen + 1
-                WHERE ipAddress    = ?
-                  AND provider     = ?
-                  AND organisation = ?
-                  AND hostname     = ?
-                  AND proxy     IS ?
-                  AND vpn       IS ?
-                  AND scraper   IS ?
-                  AND tor       IS ?
-                  AND hosting   IS ?
-                  AND anonymous IS ?
-            """, (
-                now, str(row.get("lastReportedAt", "")),
-                ip, provider, org, hostname,
-                proxy, vpn, scraper, tor, hosting, anonymous,
-            ))
-        else:
-            con.execute("""
-                INSERT INTO ip_records (
-                    first_seen_db, last_seen_db, times_seen,
-                    ipAddress, abuseConfidenceScore, totalReports, numDistinctUsers, lastReportedAt,
-                    asn, range, hostname, provider, organisation, type,
-                    country, city,
-                    proxy, vpn, compromised, scraper, tor, hosting, anonymous,
-                    risk, confidence, pc_first_seen, pc_last_seen,
-                    delisted, delist_date,
-                    attack_history, last_updated,
-                    operator_name, operator_url, operator_anonymity, operator_popularity,
-                    operator_services, operator_protocols, operator_additional,
-                    policy_ad_filtering, policy_free_access, policy_paid_access,
-                    policy_port_forwarding, policy_logging, policy_anonymous_payments,
-                    policy_crypto_payments, policy_traceable_ownership
-                ) VALUES (
-                    ?, ?, 1,
-                    ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?,
-                    ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?,
-                    ?, ?,
-                    ?, ?,
-                    ?, ?, ?, ?,
-                    ?, ?, ?,
-                    ?, ?, ?,
-                    ?, ?, ?,
-                    ?, ?
-                )
-            """, (
-                now, now,
-                ip,
-                row.get("abuseConfidenceScore"),
-                row.get("totalReports"),
-                row.get("numDistinctUsers"),
-                str(row.get("lastReportedAt", "")),
-                row.get("asn"),
-                row.get("range"),
-                hostname,
-                provider,
-                org,
-                row.get("type"),
-                row.get("country"),
-                row.get("city"),
-                proxy,
-                vpn,
-                row.get("compromised"),
-                scraper,
-                tor,
-                hosting,
-                anonymous,
-                row.get("risk"),
-                row.get("confidence"),
-                row.get("pc_first_seen"),
-                row.get("pc_last_seen"),
-                row.get("delisted"),
-                row.get("delist_date"),
-                row.get("attack_history"),
-                row.get("last_updated"),
-                row.get("operator_name"),
-                row.get("operator_url"),
-                row.get("operator_anonymity"),
-                row.get("operator_popularity"),
-                row.get("operator_services"),
-                row.get("operator_protocols"),
-                row.get("operator_additional"),
-                row.get("policy_ad_filtering"),
-                row.get("policy_free_access"),
-                row.get("policy_paid_access"),
-                row.get("policy_port_forwarding"),
-                row.get("policy_logging"),
-                row.get("policy_anonymous_payments"),
-                row.get("policy_crypto_payments"),
-                row.get("policy_traceable_ownership"),
-            ))
+        con.execute("""
+            INSERT OR REPLACE INTO ip_records (
+                last_seen_db,
+                ipAddress, abuseConfidenceScore, totalReports, numDistinctUsers, lastReportedAt,
+                asn, range, hostname, provider, organisation, type,
+                country, city,
+                proxy, vpn, compromised, scraper, tor, hosting, anonymous,
+                risk, confidence, pc_first_seen, pc_last_seen,
+                delisted, delist_date,
+                attack_history, last_updated,
+                operator_name, operator_url, operator_anonymity, operator_popularity,
+                operator_services, operator_protocols, operator_additional,
+                policy_ad_filtering, policy_free_access, policy_paid_access,
+                policy_port_forwarding, policy_logging, policy_anonymous_payments,
+                policy_crypto_payments, policy_traceable_ownership
+            ) VALUES (
+                ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                ?, ?,
+                ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?,
+                ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?
+            )
+        """, (
+            now,
+            ip,
+            row.get("abuseConfidenceScore"),
+            row.get("totalReports"),
+            row.get("numDistinctUsers"),
+            str(row.get("lastReportedAt", "")),
+            row.get("asn"),
+            row.get("range"),
+            host,
+            prov,
+            org,
+            row.get("type"),
+            row.get("country"),
+            row.get("city"),
+            proxy,
+            vpn,
+            int(row.get("compromised")) if pd.notna(row.get("compromised")) else 0,
+            int(row.get("scraper"))     if pd.notna(row.get("scraper"))     else 0,
+            tor,
+            hosting,
+            int(row.get("anonymous"))   if pd.notna(row.get("anonymous"))   else 0,
+            row.get("risk"),
+            row.get("confidence"),
+            row.get("pc_first_seen"),
+            row.get("pc_last_seen"),
+            int(row.get("delisted"))    if pd.notna(row.get("delisted"))    else 0,
+            row.get("delist_date"),
+            row.get("attack_history"),
+            row.get("last_updated"),
+            row.get("operator_name"),
+            row.get("operator_url"),
+            row.get("operator_anonymity"),
+            row.get("operator_popularity"),
+            row.get("operator_services"),
+            row.get("operator_protocols"),
+            row.get("operator_additional"),
+            int(row.get("policy_ad_filtering"))        if pd.notna(row.get("policy_ad_filtering"))        else None,
+            int(row.get("policy_free_access"))         if pd.notna(row.get("policy_free_access"))         else None,
+            int(row.get("policy_paid_access"))         if pd.notna(row.get("policy_paid_access"))         else None,
+            int(row.get("policy_port_forwarding"))     if pd.notna(row.get("policy_port_forwarding"))     else None,
+            int(row.get("policy_logging"))             if pd.notna(row.get("policy_logging"))             else None,
+            int(row.get("policy_anonymous_payments"))  if pd.notna(row.get("policy_anonymous_payments"))  else None,
+            int(row.get("policy_crypto_payments"))     if pd.notna(row.get("policy_crypto_payments"))     else None,
+            int(row.get("policy_traceable_ownership")) if pd.notna(row.get("policy_traceable_ownership")) else None,
+        ))
 
     con.commit()
     con.close()
+
+
+def save_whitelist(df: pd.DataFrame):
+    if df.empty:
+        return
+    init_db()
+    con = sqlite3.connect(DB_PATH)
+    now = datetime.now(timezone.utc).isoformat()
+    for _, row in df.iterrows():
+        con.execute(
+            "INSERT OR REPLACE INTO whitelist_matches VALUES (?,?,?,?,?)",
+            (row.get("ipAddress"), row.get("asn"), row.get("provider"), row.get("organisation"), now)
+        )
+    con.commit()
+    con.close()
+
+
+def load_whitelist() -> pd.DataFrame:
+    try:
+        con = sqlite3.connect(DB_PATH)
+        df = pd.read_sql_query("SELECT * FROM whitelist_matches ORDER BY matched_at DESC", con)
+        con.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
 def load(days: int = 0) -> pd.DataFrame:
@@ -237,7 +228,7 @@ def load(days: int = 0) -> pd.DataFrame:
         if days > 0:
             cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
             df = pd.read_sql_query(
-                "SELECT * FROM ip_records WHERE first_seen_db >= ? ORDER BY last_seen_db DESC",
+                "SELECT * FROM ip_records WHERE last_seen_db >= ? ORDER BY last_seen_db DESC",
                 con, params=(cutoff,)
             )
         else:
