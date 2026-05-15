@@ -2,7 +2,6 @@
 database.py
 -----------
 Stores and retrieves IP records from SQLite.
-Uses INSERT OR REPLACE for simplicity.
 """
 
 import sqlite3
@@ -16,68 +15,43 @@ def init_db():
     con = sqlite3.connect(DB_PATH)
     con.execute("""
         CREATE TABLE IF NOT EXISTS ip_records (
-            last_seen_db                TEXT,
+            last_seen_db        TEXT,
 
             -- AbuseIPDB
-            ipAddress                   TEXT,
-            abuseConfidenceScore        INTEGER,
-            totalReports                INTEGER,
-            numDistinctUsers            INTEGER,
-            lastReportedAt              TEXT,
+            ipAddress           TEXT,
+            abuseConfidenceScore INTEGER,
+            totalReports        INTEGER,
+            numDistinctUsers    INTEGER,
+            lastReportedAt      TEXT,
 
             -- Network
-            asn                         TEXT,
-            range                       TEXT,
-            hostname                    TEXT,
-            provider                    TEXT,
-            organisation                TEXT,
-            type                        TEXT,
+            asn                 TEXT,
+            hostname            TEXT,
+            provider            TEXT,
+            organisation        TEXT,
+            type                TEXT,
 
             -- Location
-            country                     TEXT,
-            city                        TEXT,
+            country             TEXT,
+            city                TEXT,
 
             -- Detections
-            proxy                       INTEGER,
-            vpn                         INTEGER,
-            compromised                 INTEGER,
-            scraper                     INTEGER,
-            tor                         INTEGER,
-            hosting                     INTEGER,
-            anonymous                   INTEGER,
-            risk                        INTEGER,
-            confidence                  INTEGER,
-            pc_first_seen               TEXT,
-            pc_last_seen                TEXT,
-
-            -- Detection History
-            delisted                    INTEGER,
-            delist_date                 TEXT,
-
-            -- Attack History
-            attack_history              TEXT,
-
-            -- Last Updated
-            last_updated                TEXT,
+            proxy               INTEGER,
+            vpn                 INTEGER,
+            compromised         INTEGER,
+            scraper             INTEGER,
+            tor                 INTEGER,
+            hosting             INTEGER,
+            anonymous           INTEGER,
 
             -- Operator
-            operator_name               TEXT,
-            operator_url                TEXT,
-            operator_anonymity          TEXT,
-            operator_popularity         TEXT,
-            operator_services           TEXT,
-            operator_protocols          TEXT,
-            operator_additional         TEXT,
-
-            -- Operator Policies
-            policy_ad_filtering         INTEGER,
-            policy_free_access          INTEGER,
-            policy_paid_access          INTEGER,
-            policy_port_forwarding      INTEGER,
-            policy_logging              INTEGER,
-            policy_anonymous_payments   INTEGER,
-            policy_crypto_payments      INTEGER,
-            policy_traceable_ownership  INTEGER,
+            operator_name       TEXT,
+            operator_url        TEXT,
+            operator_anonymity  TEXT,
+            operator_popularity TEXT,
+            operator_services   TEXT,
+            operator_protocols  TEXT,
+            operator_additional TEXT,
 
             PRIMARY KEY (ipAddress, provider, organisation, hostname, proxy, vpn, tor, hosting)
         )
@@ -85,11 +59,11 @@ def init_db():
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS whitelist_matches (
-            ipAddress   TEXT PRIMARY KEY,
-            asn         TEXT,
-            provider    TEXT,
+            ipAddress    TEXT PRIMARY KEY,
+            asn          TEXT,
+            provider     TEXT,
             organisation TEXT,
-            matched_at  TEXT
+            matched_at   TEXT
         )
     """)
 
@@ -120,31 +94,19 @@ def save(df: pd.DataFrame):
             INSERT OR REPLACE INTO ip_records (
                 last_seen_db,
                 ipAddress, abuseConfidenceScore, totalReports, numDistinctUsers, lastReportedAt,
-                asn, range, hostname, provider, organisation, type,
+                asn, hostname, provider, organisation, type,
                 country, city,
                 proxy, vpn, compromised, scraper, tor, hosting, anonymous,
-                risk, confidence, pc_first_seen, pc_last_seen,
-                delisted, delist_date,
-                attack_history, last_updated,
                 operator_name, operator_url, operator_anonymity, operator_popularity,
-                operator_services, operator_protocols, operator_additional,
-                policy_ad_filtering, policy_free_access, policy_paid_access,
-                policy_port_forwarding, policy_logging, policy_anonymous_payments,
-                policy_crypto_payments, policy_traceable_ownership
+                operator_services, operator_protocols, operator_additional
             ) VALUES (
                 ?,
                 ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
                 ?, ?,
                 ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?,
-                ?, ?,
-                ?, ?,
-                ?, ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?,
-                ?, ?
+                ?, ?, ?
             )
         """, (
             now,
@@ -154,7 +116,6 @@ def save(df: pd.DataFrame):
             row.get("numDistinctUsers"),
             str(row.get("lastReportedAt", "")),
             row.get("asn"),
-            row.get("range"),
             host,
             prov,
             org,
@@ -168,14 +129,6 @@ def save(df: pd.DataFrame):
             tor,
             hosting,
             int(row.get("anonymous"))   if pd.notna(row.get("anonymous"))   else 0,
-            row.get("risk"),
-            row.get("confidence"),
-            row.get("pc_first_seen"),
-            row.get("pc_last_seen"),
-            int(row.get("delisted"))    if pd.notna(row.get("delisted"))    else 0,
-            row.get("delist_date"),
-            row.get("attack_history"),
-            row.get("last_updated"),
             row.get("operator_name"),
             row.get("operator_url"),
             row.get("operator_anonymity"),
@@ -183,14 +136,6 @@ def save(df: pd.DataFrame):
             row.get("operator_services"),
             row.get("operator_protocols"),
             row.get("operator_additional"),
-            int(row.get("policy_ad_filtering"))        if pd.notna(row.get("policy_ad_filtering"))        else None,
-            int(row.get("policy_free_access"))         if pd.notna(row.get("policy_free_access"))         else None,
-            int(row.get("policy_paid_access"))         if pd.notna(row.get("policy_paid_access"))         else None,
-            int(row.get("policy_port_forwarding"))     if pd.notna(row.get("policy_port_forwarding"))     else None,
-            int(row.get("policy_logging"))             if pd.notna(row.get("policy_logging"))             else None,
-            int(row.get("policy_anonymous_payments"))  if pd.notna(row.get("policy_anonymous_payments"))  else None,
-            int(row.get("policy_crypto_payments"))     if pd.notna(row.get("policy_crypto_payments"))     else None,
-            int(row.get("policy_traceable_ownership")) if pd.notna(row.get("policy_traceable_ownership")) else None,
         ))
 
     con.commit()
@@ -212,16 +157,6 @@ def save_whitelist(df: pd.DataFrame):
     con.close()
 
 
-def load_whitelist() -> pd.DataFrame:
-    try:
-        con = sqlite3.connect(DB_PATH)
-        df = pd.read_sql_query("SELECT * FROM whitelist_matches ORDER BY matched_at DESC", con)
-        con.close()
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-
 def load(days: int = 0) -> pd.DataFrame:
     try:
         con = sqlite3.connect(DB_PATH)
@@ -235,6 +170,18 @@ def load(days: int = 0) -> pd.DataFrame:
             df = pd.read_sql_query(
                 "SELECT * FROM ip_records ORDER BY last_seen_db DESC", con
             )
+        con.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def load_whitelist() -> pd.DataFrame:
+    try:
+        con = sqlite3.connect(DB_PATH)
+        df = pd.read_sql_query(
+            "SELECT * FROM whitelist_matches ORDER BY matched_at DESC", con
+        )
         con.close()
         return df
     except Exception:
