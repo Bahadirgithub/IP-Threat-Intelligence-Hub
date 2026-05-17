@@ -61,8 +61,6 @@ def verify_business_ips(df: pd.DataFrame, df_white: pd.DataFrame) -> pd.DataFram
                         corrected_ips[ip] = "Hosting"
                     elif ip_data.get("is_mobile") is True:
                         corrected_ips[ip] = "Wireless"
-                    elif company_type == "isp":
-                        corrected_ips[ip] = "ISP"
 
             elif response.status_code == 429:
                 st.warning("ipapi.is rate limit reached, waiting 60s...")
@@ -75,5 +73,8 @@ def verify_business_ips(df: pd.DataFrame, df_white: pd.DataFrame) -> pd.DataFram
         update_mask = (df["ipAddress"] == ip) & mask
         df.loc[update_mask, "type"] = new_type
         df.loc[update_mask, "_api_corrected"] = True
+
+    print(f"Business/Residential IP sayısı: {mask.sum()}")
+    print(f"Corrected IPs: {corrected_ips}")
 
     return df
