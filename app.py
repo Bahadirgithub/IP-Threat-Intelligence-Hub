@@ -66,10 +66,9 @@ if "white_ips" in st.session_state:
     st.subheader("✅ Whitelist Analysis")
 
     counts = st.session_state.get("counts", {"asn": 0, "gn": 0})
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Manual ASN Matches",   counts["asn"])
-    m2.metric("GreyNoise Benign Hits", counts["gn"])
-    m3.metric("Total Trusted IPs",    counts["asn"] + counts["gn"])
+    m1, m2 = st.columns(2)
+    m1.metric("Whitelist Matches", counts["asn"])
+    m2.metric("Total Trusted IPs", counts["asn"])
 
     df_w = st.session_state["white_ips"]
     if not df_w.empty:
@@ -79,4 +78,3 @@ if "white_ips" in st.session_state:
             use_container_width=True,
             hide_index=True,
         )
-
