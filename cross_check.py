@@ -3,9 +3,8 @@ cross_check.py
 --------------
 Cross-checks Business/Residential IPs against ipapi.is.
 Rules:
-  is_datacenter = true      → type = "Hosting"
-  is_mobile     = true      → type = "Wireless"
-  company.type  = "isp"     → type = "ISP"
+  is_datacenter = true → type = "Hosting"
+  is_mobile     = true → type = "Wireless"
 Corrected rows flagged with _api_corrected=True (shown orange in UI).
 """
 
@@ -14,7 +13,7 @@ import requests
 import streamlit as st
 import pandas as pd
 
-BATCH_SIZE = 1000
+BATCH_SIZE = 100
 
 
 def verify_business_ips(df: pd.DataFrame, df_white: pd.DataFrame) -> pd.DataFrame:
@@ -40,6 +39,7 @@ def verify_business_ips(df: pd.DataFrame, df_white: pd.DataFrame) -> pd.DataFram
 
     for i in range(0, len(ips_to_check), BATCH_SIZE):
         batch = ips_to_check[i:i + BATCH_SIZE]
+        print(f"Batch {i//BATCH_SIZE + 1}: {len(batch)} IPs")
 
         try:
             response = requests.post(
@@ -47,6 +47,7 @@ def verify_business_ips(df: pd.DataFrame, df_white: pd.DataFrame) -> pd.DataFram
                 json={"ips": batch},
                 timeout=30,
             )
+            print(f"Status: {response.status_code}")
 
             if response.status_code == 200:
                 data = response.json()
@@ -54,9 +55,6 @@ def verify_business_ips(df: pd.DataFrame, df_white: pd.DataFrame) -> pd.DataFram
                     ip_data = data.get(ip, {})
                     if not ip_data:
                         continue
-
-                    company_type = (ip_data.get("company") or {}).get("type", "").lower()
-
                     if ip_data.get("is_datacenter") is True:
                         corrected_ips[ip] = "Hosting"
                     elif ip_data.get("is_mobile") is True:
@@ -74,7 +72,7 @@ def verify_business_ips(df: pd.DataFrame, df_white: pd.DataFrame) -> pd.DataFram
         df.loc[update_mask, "type"] = new_type
         df.loc[update_mask, "_api_corrected"] = True
 
-    print(f"Business/Residential IP sayısı: {mask.sum()}")
+    print(f"Business/Residential IP: {mask.sum()}")
     print(f"Corrected IPs: {corrected_ips}")
 
     return df
