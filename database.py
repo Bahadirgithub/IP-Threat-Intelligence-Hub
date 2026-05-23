@@ -13,29 +13,22 @@ DB_PATH = "threat_intel.db"
 
 def init_db():
     con = sqlite3.connect(DB_PATH)
+
     con.execute("""
         CREATE TABLE IF NOT EXISTS ip_records (
             last_seen_db        TEXT,
-
-            -- AbuseIPDB
             ipAddress           TEXT,
             abuseConfidenceScore INTEGER,
             totalReports        INTEGER,
             numDistinctUsers    INTEGER,
             lastReportedAt      TEXT,
-
-            -- Network
             asn                 TEXT,
             hostname            TEXT,
             provider            TEXT,
             organisation        TEXT,
             type                TEXT,
-
-            -- Location
             country             TEXT,
             city                TEXT,
-
-            -- Detections
             proxy               INTEGER,
             vpn                 INTEGER,
             compromised         INTEGER,
@@ -43,8 +36,6 @@ def init_db():
             tor                 INTEGER,
             hosting             INTEGER,
             anonymous           INTEGER,
-
-            -- Operator
             operator_name       TEXT,
             operator_url        TEXT,
             operator_anonymity  TEXT,
@@ -52,7 +43,6 @@ def init_db():
             operator_services   TEXT,
             operator_protocols  TEXT,
             operator_additional TEXT,
-
             PRIMARY KEY (ipAddress, provider, organisation, hostname, proxy, vpn, tor, hosting)
         )
     """)
@@ -64,6 +54,22 @@ def init_db():
             provider     TEXT,
             organisation TEXT,
             matched_at   TEXT
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS wireless_ips (
+            ipAddress       TEXT PRIMARY KEY,
+            provider        TEXT,
+            organisation    TEXT,
+            asn             TEXT,
+            type            TEXT,
+            proxy           INTEGER,
+            vpn             INTEGER,
+            anonymous       INTEGER,
+            tor             INTEGER,
+            operator_name   TEXT,
+            detected_at     TEXT
         )
     """)
 
@@ -81,9 +87,9 @@ def save(df: pd.DataFrame):
 
     for _, row in df.iterrows():
         ip   = row.get("ipAddress")
-        prov = row.get("provider")      or "unknown"
-        org  = row.get("organisation")  or "unknown"
-        host = row.get("hostname")      or "unknown"
+        prov = row.get("provider")     or "unknown"
+        org  = row.get("organisation") or "unknown"
+        host = row.get("hostname")     or "unknown"
 
         proxy     = int(row.get("proxy"))     if pd.notna(row.get("proxy"))     else 0
         vpn       = int(row.get("vpn"))       if pd.notna(row.get("vpn"))       else 0
@@ -116,18 +122,14 @@ def save(df: pd.DataFrame):
             row.get("numDistinctUsers"),
             str(row.get("lastReportedAt", "")),
             row.get("asn"),
-            host,
-            prov,
-            org,
+            host, prov, org,
             row.get("type"),
             row.get("country"),
             row.get("city"),
-            proxy,
-            vpn,
+            proxy, vpn,
             int(row.get("compromised")) if pd.notna(row.get("compromised")) else 0,
             int(row.get("scraper"))     if pd.notna(row.get("scraper"))     else 0,
-            tor,
-            hosting,
+            tor, hosting,
             int(row.get("anonymous"))   if pd.notna(row.get("anonymous"))   else 0,
             row.get("operator_name"),
             row.get("operator_url"),
@@ -157,6 +159,35 @@ def save_whitelist(df: pd.DataFrame):
     con.close()
 
 
+def save_wireless(df: pd.DataFrame):
+    if df.empty:
+        return
+    init_db()
+    con = sqlite3.connect(DB_PATH)
+    now = datetime.now(timezone.utc).isoformat()
+    for _, row in df.iterrows():
+        con.execute("""
+            INSERT OR REPLACE INTO wireless_ips
+            (ipAddress, provider, organisation, asn, type,
+             proxy, vpn, anonymous, tor, operator_name, detected_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            row.get("ipAddress"),
+            row.get("provider"),
+            row.get("organisation"),
+            row.get("asn"),
+            row.get("type"),
+            int(row.get("proxy"))     if pd.notna(row.get("proxy"))     else 0,
+            int(row.get("vpn"))       if pd.notna(row.get("vpn"))       else 0,
+            int(row.get("anonymous")) if pd.notna(row.get("anonymous")) else 0,
+            int(row.get("tor"))       if pd.notna(row.get("tor"))       else 0,
+            row.get("operator_name"),
+            now,
+        ))
+    con.commit()
+    con.close()
+
+
 def load(days: int = 0) -> pd.DataFrame:
     try:
         con = sqlite3.connect(DB_PATH)
@@ -181,6 +212,18 @@ def load_whitelist() -> pd.DataFrame:
         con = sqlite3.connect(DB_PATH)
         df = pd.read_sql_query(
             "SELECT * FROM whitelist_matches ORDER BY matched_at DESC", con
+        )
+        con.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def load_wireless() -> pd.DataFrame:
+    try:
+        con = sqlite3.connect(DB_PATH)
+        df = pd.read_sql_query(
+            "SELECT * FROM wireless_ips ORDER BY detected_at DESC", con
         )
         con.close()
         return df
