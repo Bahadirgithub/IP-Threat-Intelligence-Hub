@@ -2,7 +2,8 @@
 database.py
 -----------
 Stores and retrieves IP records from SQLite.
-Tables: ip_records, whitelist_matches, wireless_ips, cloud_provider_ips, cdn_edge_ips
+Tables: ip_records, whitelist_matches, wireless_ips,
+        cloud_provider_ips, cdn_edge_ips, bulletproof_hosting
 """
 
 import sqlite3
@@ -113,6 +114,25 @@ def init_db():
             compromised        INTEGER,
             scraper            INTEGER,
             anonymous          INTEGER,
+            operator_name      TEXT,
+            operator_url       TEXT,
+            operator_anonymity TEXT,
+            detected_at        TEXT
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS bulletproof_hosting (
+            ipAddress          TEXT PRIMARY KEY,
+            provider           TEXT,
+            asn                TEXT,
+            hostname           TEXT,
+            organisation       TEXT,
+            city               TEXT,
+            type               TEXT,
+            proxy              INTEGER,
+            vpn                INTEGER,
+            tor                INTEGER,
             operator_name      TEXT,
             operator_url       TEXT,
             operator_anonymity TEXT,
@@ -309,6 +329,38 @@ def save_cdn(df: pd.DataFrame):
     con.close()
 
 
+def save_bulletproof(df: pd.DataFrame):
+    if df.empty:
+        return
+    init_db()
+    con = sqlite3.connect(DB_PATH)
+    now = datetime.now(timezone.utc).isoformat()
+    for _, row in df.iterrows():
+        con.execute("""
+            INSERT OR REPLACE INTO bulletproof_hosting
+            (ipAddress, provider, asn, hostname, organisation, city, type,
+             proxy, vpn, tor, operator_name, operator_url, operator_anonymity, detected_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            row.get("ipAddress"),
+            row.get("provider"),
+            row.get("asn"),
+            row.get("hostname"),
+            row.get("organisation"),
+            row.get("city"),
+            row.get("type"),
+            int(row.get("proxy")) if pd.notna(row.get("proxy")) else 0,
+            int(row.get("vpn"))   if pd.notna(row.get("vpn"))   else 0,
+            int(row.get("tor"))   if pd.notna(row.get("tor"))   else 0,
+            row.get("operator_name"),
+            row.get("operator_url"),
+            row.get("operator_anonymity"),
+            now,
+        ))
+    con.commit()
+    con.close()
+
+
 def load(days: int = 0) -> pd.DataFrame:
     try:
         con = sqlite3.connect(DB_PATH)
@@ -369,6 +421,18 @@ def load_cdn() -> pd.DataFrame:
         con = sqlite3.connect(DB_PATH)
         df = pd.read_sql_query(
             "SELECT * FROM cdn_edge_ips ORDER BY detected_at DESC", con
+        )
+        con.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def load_bulletproof() -> pd.DataFrame:
+    try:
+        con = sqlite3.connect(DB_PATH)
+        df = pd.read_sql_query(
+            "SELECT * FROM bulletproof_hosting ORDER BY detected_at DESC", con
         )
         con.close()
         return df

@@ -2,7 +2,7 @@
 app.py
 ------
 ThreatWatch — Main Streamlit Dashboard.
-Pipeline: AbuseIPDB -> ProxyCheck -> Whitelist -> ip-api -> Cloud Check -> CDN Check
+Pipeline: AbuseIPDB -> ProxyCheck -> Whitelist -> ip-api -> Cloud -> CDN -> Bulletproof
 """
 
 import streamlit as st
@@ -12,10 +12,14 @@ pd.set_option("styler.render.max_elements", 500000)
 
 from ingestion import fetch_blacklist
 from enrichment import enrich
-from database import save, save_whitelist, save_wireless, save_cloud, save_cdn, record_count
+from database import (
+    save, save_whitelist, save_wireless,
+    save_cloud, save_cdn, save_bulletproof,
+    record_count
+)
 from whitelist import check_whitelist
 from cross_check import verify_business_ips
-from cloud_check import check_cloud_providers, check_cdn_providers
+from cloud_check import check_cloud_providers, check_cdn_providers, check_bulletproof
 
 st.set_page_config(page_title="ThreatWatch", layout="wide", page_icon="🛡️")
 st.title("🛡️ ThreatWatch — Security Dashboard")
@@ -31,7 +35,7 @@ def highlight_corrected_type(data):
 
 
 if st.button("Fetch & Process Data"):
-    with st.spinner("Running pipeline: AbuseIPDB → ProxyCheck → Whitelist → ip-api → Cloud → CDN..."):
+    with st.spinner("Running pipeline: AbuseIPDB → ProxyCheck → Whitelist → ip-api → Cloud → CDN → Bulletproof..."):
         try:
             df_raw      = fetch_blacklist()
             df_enriched = enrich(df_raw)
@@ -44,15 +48,17 @@ if st.button("Fetch & Process Data"):
                 df_final["type"].fillna("").str.lower() == "wireless"
                 ].copy()
 
-            # Cloud & CDN extraction
+            # Cloud, CDN & Bulletproof extraction
             df_cloud = check_cloud_providers(df_final)
             df_cdn   = check_cdn_providers(df_final)
+            df_bp    = check_bulletproof(df_final)
 
             save(df_final.drop(columns=["_api_corrected"]))
             save_whitelist(df_white)
             save_wireless(df_wireless)
             save_cloud(df_cloud)
             save_cdn(df_cdn)
+            save_bulletproof(df_bp)
 
             white_ip_set = set(df_white["ipAddress"].unique()) if not df_white.empty else set()
             st.session_state["all_ips"]      = df_final[~df_final["ipAddress"].isin(white_ip_set)].copy()
@@ -60,6 +66,7 @@ if st.button("Fetch & Process Data"):
             st.session_state["wireless_ips"] = df_wireless
             st.session_state["cloud_ips"]    = df_cloud
             st.session_state["cdn_ips"]      = df_cdn
+            st.session_state["bp_ips"]       = df_bp
             st.session_state["wl_cnt"]       = wl_cnt
 
             st.success(f"Done! Total records in DB: {record_count():,}")
@@ -123,7 +130,7 @@ if "all_ips" in st.session_state:
     with col1:
         st.subheader(f"🖥️ Hosting IPs ({len(df_hosting):,})")
     with col2:
-        st.page_link("pages/hosting.py", label="🔍 Click for more Information --→")
+        st.page_link("pages/hosting.py", label="🔍 Detay →")
 
     HOSTING_COLS = ["ipAddress", "provider", "asn", "organisation", "country", "city", "type"]
     st.dataframe(
@@ -138,9 +145,29 @@ if "all_ips" in st.session_state:
 if "cdn_ips" in st.session_state:
     df_cdn = st.session_state["cdn_ips"]
     st.subheader(f"🌐 CDN Edge IPs ({len(df_cdn):,})")
-    CDN_COLS = ["ipAddress", "provider", "asn", "organisation", "city", "hosting", "type"]
+    CDN_COLS = [
+        "ipAddress", "provider", "asn", "hostname", "organisation", "city", "type",
+        "proxy", "vpn", "tor", "hosting", "compromised", "scraper", "anonymous",
+        "operator_name", "operator_url", "operator_anonymity",
+    ]
     st.dataframe(
         df_cdn[[c for c in CDN_COLS if c in df_cdn.columns]],
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.divider()
+
+
+# ── BULLETPROOF HOSTING TABLE ─────────────────────────────────────────────────
+if "bp_ips" in st.session_state:
+    df_bp = st.session_state["bp_ips"]
+    st.subheader(f"🚨 Bulletproof Hosting IPs ({len(df_bp):,})")
+    BP_COLS = [
+        "ipAddress", "provider", "asn", "hostname", "organisation", "city", "type",
+        "proxy", "vpn", "tor", "operator_name", "operator_url", "operator_anonymity",
+    ]
+    st.dataframe(
+        df_bp[[c for c in BP_COLS if c in df_bp.columns]],
         use_container_width=True,
         hide_index=True,
     )
