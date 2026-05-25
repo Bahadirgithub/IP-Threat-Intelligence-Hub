@@ -36,43 +36,54 @@ def verify_business_ips(df: pd.DataFrame, df_white: pd.DataFrame) -> pd.DataFram
         return df
 
     corrected_ips = {}
+    warning_placeholder = st.empty()  # Tek bir placeholder, bir kez gösterilir
 
     for i in range(0, len(ips_to_check), BATCH_SIZE):
         batch = ips_to_check[i:i + BATCH_SIZE]
-        print(f"Batch {i//BATCH_SIZE + 1}: {len(batch)} IPs")
+        print(f"[cross_check] Batch {i // BATCH_SIZE + 1}/{(len(ips_to_check) + BATCH_SIZE - 1) // BATCH_SIZE}: {len(batch)} IPs")
 
-        try:
-            response = requests.post(
-                "https://api.ipapi.is",
-                json={"ips": batch},
-                timeout=30,
-            )
-            print(f"Status: {response.status_code}")
+        while True:
+            try:
+                response = requests.post(
+                    "https://api.ipapi.is",
+                    json={"ips": batch},
+                    timeout=30,
+                )
 
-            if response.status_code == 200:
-                data = response.json()
-                for ip in batch:
-                    ip_data = data.get(ip, {})
-                    if not ip_data:
-                        continue
-                    if ip_data.get("is_datacenter") is True:
-                        corrected_ips[ip] = "Hosting"
-                    elif ip_data.get("is_mobile") is True:
-                        corrected_ips[ip] = "Wireless"
+                if response.status_code == 200:
+                    warning_placeholder.empty()
+                    data = response.json()
+                    for ip in batch:
+                        ip_data = data.get(ip, {})
+                        if not ip_data:
+                            continue
+                        if ip_data.get("is_datacenter") is True:
+                            corrected_ips[ip] = "Hosting"
+                        elif ip_data.get("is_mobile") is True:
+                            corrected_ips[ip] = "Wireless"
+                    break
 
-            elif response.status_code == 429:
-                st.warning("ipapi.is rate limit reached, waiting 60s...")
-                time.sleep(60)
+                elif response.status_code == 429:
+                    warning_placeholder.warning("⚠️ ipapi.is rate limit reached, waiting 60s...")
+                    print(f"[cross_check] Rate limit hit, waiting 60s...")
+                    time.sleep(60)
 
-        except Exception as e:
-            print(f"ipapi.is error: {e}")
+                else:
+                    print(f"[cross_check] Unexpected status: {response.status_code}")
+                    break
+
+            except Exception as e:
+                print(f"[cross_check] ipapi.is error: {e}")
+                break
+
+    warning_placeholder.empty()
 
     for ip, new_type in corrected_ips.items():
         update_mask = (df["ipAddress"] == ip) & mask
         df.loc[update_mask, "type"] = new_type
         df.loc[update_mask, "_api_corrected"] = True
 
-    print(f"Business/Residential IP: {mask.sum()}")
-    print(f"Corrected IPs: {corrected_ips}")
+    print(f"[cross_check] Business/Residential IPs checked: {mask.sum()}")
+    print(f"[cross_check] Corrected IPs: {len(corrected_ips)}")
 
     return df

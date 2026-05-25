@@ -2,6 +2,7 @@
 database.py
 -----------
 Stores and retrieves IP records from SQLite.
+Tables: ip_records, whitelist_matches, wireless_ips, cloud_provider_ips, cdn_edge_ips
 """
 
 import sqlite3
@@ -16,33 +17,33 @@ def init_db():
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS ip_records (
-            last_seen_db        TEXT,
-            ipAddress           TEXT,
+            last_seen_db         TEXT,
+            ipAddress            TEXT,
             abuseConfidenceScore INTEGER,
-            totalReports        INTEGER,
-            numDistinctUsers    INTEGER,
-            lastReportedAt      TEXT,
-            asn                 TEXT,
-            hostname            TEXT,
-            provider            TEXT,
-            organisation        TEXT,
-            type                TEXT,
-            country             TEXT,
-            city                TEXT,
-            proxy               INTEGER,
-            vpn                 INTEGER,
-            compromised         INTEGER,
-            scraper             INTEGER,
-            tor                 INTEGER,
-            hosting             INTEGER,
-            anonymous           INTEGER,
-            operator_name       TEXT,
-            operator_url        TEXT,
-            operator_anonymity  TEXT,
-            operator_popularity TEXT,
-            operator_services   TEXT,
-            operator_protocols  TEXT,
-            operator_additional TEXT,
+            totalReports         INTEGER,
+            numDistinctUsers     INTEGER,
+            lastReportedAt       TEXT,
+            asn                  TEXT,
+            hostname             TEXT,
+            provider             TEXT,
+            organisation         TEXT,
+            type                 TEXT,
+            country              TEXT,
+            city                 TEXT,
+            proxy                INTEGER,
+            vpn                  INTEGER,
+            compromised          INTEGER,
+            scraper              INTEGER,
+            tor                  INTEGER,
+            hosting              INTEGER,
+            anonymous            INTEGER,
+            operator_name        TEXT,
+            operator_url         TEXT,
+            operator_anonymity   TEXT,
+            operator_popularity  TEXT,
+            operator_services    TEXT,
+            operator_protocols   TEXT,
+            operator_additional  TEXT,
             PRIMARY KEY (ipAddress, provider, organisation, hostname, proxy, vpn, tor, hosting)
         )
     """)
@@ -59,17 +60,63 @@ def init_db():
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS wireless_ips (
-            ipAddress       TEXT PRIMARY KEY,
-            provider        TEXT,
-            organisation    TEXT,
-            asn             TEXT,
-            type            TEXT,
-            proxy           INTEGER,
-            vpn             INTEGER,
-            anonymous       INTEGER,
-            tor             INTEGER,
-            operator_name   TEXT,
-            detected_at     TEXT
+            ipAddress     TEXT PRIMARY KEY,
+            provider      TEXT,
+            organisation  TEXT,
+            asn           TEXT,
+            type          TEXT,
+            proxy         INTEGER,
+            vpn           INTEGER,
+            anonymous     INTEGER,
+            tor           INTEGER,
+            operator_name TEXT,
+            detected_at   TEXT
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS cloud_provider_ips (
+            ipAddress          TEXT PRIMARY KEY,
+            provider           TEXT,
+            asn                TEXT,
+            hostname           TEXT,
+            organisation       TEXT,
+            city               TEXT,
+            type               TEXT,
+            proxy              INTEGER,
+            vpn                INTEGER,
+            tor                INTEGER,
+            hosting            INTEGER,
+            compromised        INTEGER,
+            scraper            INTEGER,
+            anonymous          INTEGER,
+            operator_name      TEXT,
+            operator_url       TEXT,
+            operator_anonymity TEXT,
+            detected_at        TEXT
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS cdn_edge_ips (
+            ipAddress          TEXT PRIMARY KEY,
+            provider           TEXT,
+            asn                TEXT,
+            hostname           TEXT,
+            organisation       TEXT,
+            city               TEXT,
+            type               TEXT,
+            proxy              INTEGER,
+            vpn                INTEGER,
+            tor                INTEGER,
+            hosting            INTEGER,
+            compromised        INTEGER,
+            scraper            INTEGER,
+            anonymous          INTEGER,
+            operator_name      TEXT,
+            operator_url       TEXT,
+            operator_anonymity TEXT,
+            detected_at        TEXT
         )
     """)
 
@@ -91,10 +138,10 @@ def save(df: pd.DataFrame):
         org  = row.get("organisation") or "unknown"
         host = row.get("hostname")     or "unknown"
 
-        proxy     = int(row.get("proxy"))     if pd.notna(row.get("proxy"))     else 0
-        vpn       = int(row.get("vpn"))       if pd.notna(row.get("vpn"))       else 0
-        tor       = int(row.get("tor"))       if pd.notna(row.get("tor"))       else 0
-        hosting   = int(row.get("hosting"))   if pd.notna(row.get("hosting"))   else 0
+        proxy   = int(row.get("proxy"))   if pd.notna(row.get("proxy"))   else 0
+        vpn     = int(row.get("vpn"))     if pd.notna(row.get("vpn"))     else 0
+        tor     = int(row.get("tor"))     if pd.notna(row.get("tor"))     else 0
+        hosting = int(row.get("hosting")) if pd.notna(row.get("hosting")) else 0
 
         con.execute("""
             INSERT OR REPLACE INTO ip_records (
@@ -188,6 +235,80 @@ def save_wireless(df: pd.DataFrame):
     con.close()
 
 
+def save_cloud(df: pd.DataFrame):
+    if df.empty:
+        return
+    init_db()
+    con = sqlite3.connect(DB_PATH)
+    now = datetime.now(timezone.utc).isoformat()
+    for _, row in df.iterrows():
+        con.execute("""
+            INSERT OR REPLACE INTO cloud_provider_ips
+            (ipAddress, provider, asn, hostname, organisation, city, type,
+             proxy, vpn, tor, hosting, compromised, scraper, anonymous,
+             operator_name, operator_url, operator_anonymity, detected_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            row.get("ipAddress"),
+            row.get("provider"),
+            row.get("asn"),
+            row.get("hostname"),
+            row.get("organisation"),
+            row.get("city"),
+            row.get("type"),
+            int(row.get("proxy"))       if pd.notna(row.get("proxy"))       else 0,
+            int(row.get("vpn"))         if pd.notna(row.get("vpn"))         else 0,
+            int(row.get("tor"))         if pd.notna(row.get("tor"))         else 0,
+            int(row.get("hosting"))     if pd.notna(row.get("hosting"))     else 0,
+            int(row.get("compromised")) if pd.notna(row.get("compromised")) else 0,
+            int(row.get("scraper"))     if pd.notna(row.get("scraper"))     else 0,
+            int(row.get("anonymous"))   if pd.notna(row.get("anonymous"))   else 0,
+            row.get("operator_name"),
+            row.get("operator_url"),
+            row.get("operator_anonymity"),
+            now,
+        ))
+    con.commit()
+    con.close()
+
+
+def save_cdn(df: pd.DataFrame):
+    if df.empty:
+        return
+    init_db()
+    con = sqlite3.connect(DB_PATH)
+    now = datetime.now(timezone.utc).isoformat()
+    for _, row in df.iterrows():
+        con.execute("""
+            INSERT OR REPLACE INTO cdn_edge_ips
+            (ipAddress, provider, asn, hostname, organisation, city, type,
+             proxy, vpn, tor, hosting, compromised, scraper, anonymous,
+             operator_name, operator_url, operator_anonymity, detected_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            row.get("ipAddress"),
+            row.get("provider"),
+            row.get("asn"),
+            row.get("hostname"),
+            row.get("organisation"),
+            row.get("city"),
+            row.get("type"),
+            int(row.get("proxy"))       if pd.notna(row.get("proxy"))       else 0,
+            int(row.get("vpn"))         if pd.notna(row.get("vpn"))         else 0,
+            int(row.get("tor"))         if pd.notna(row.get("tor"))         else 0,
+            int(row.get("hosting"))     if pd.notna(row.get("hosting"))     else 0,
+            int(row.get("compromised")) if pd.notna(row.get("compromised")) else 0,
+            int(row.get("scraper"))     if pd.notna(row.get("scraper"))     else 0,
+            int(row.get("anonymous"))   if pd.notna(row.get("anonymous"))   else 0,
+            row.get("operator_name"),
+            row.get("operator_url"),
+            row.get("operator_anonymity"),
+            now,
+        ))
+    con.commit()
+    con.close()
+
+
 def load(days: int = 0) -> pd.DataFrame:
     try:
         con = sqlite3.connect(DB_PATH)
@@ -224,6 +345,30 @@ def load_wireless() -> pd.DataFrame:
         con = sqlite3.connect(DB_PATH)
         df = pd.read_sql_query(
             "SELECT * FROM wireless_ips ORDER BY detected_at DESC", con
+        )
+        con.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def load_cloud() -> pd.DataFrame:
+    try:
+        con = sqlite3.connect(DB_PATH)
+        df = pd.read_sql_query(
+            "SELECT * FROM cloud_provider_ips ORDER BY detected_at DESC", con
+        )
+        con.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def load_cdn() -> pd.DataFrame:
+    try:
+        con = sqlite3.connect(DB_PATH)
+        df = pd.read_sql_query(
+            "SELECT * FROM cdn_edge_ips ORDER BY detected_at DESC", con
         )
         con.close()
         return df
