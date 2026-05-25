@@ -2,8 +2,9 @@
 cloud_check.py
 --------------
 Checks enriched IPs against:
-  1. Cloud Provider IP ranges  → cloud_ranges/*.txt
-  2. CDN Edge IP ranges        → cdn_ranges/*.txt
+  1. Cloud Provider IP ranges    → cloud_ranges/*.txt
+  2. CDN Edge IP ranges          → cdn_ranges/*.txt
+  3. Bulletproof Hosting ASNs    → bulletproof_asns.txt
 Uses binary search (bisect) for fast O(log n) prefix lookups.
 No external dependencies — stdlib only.
 """
@@ -15,8 +16,10 @@ import pandas as pd
 
 CLOUD_RANGES_DIR = "cloud_ranges"
 CDN_RANGES_DIR   = "cdn_ranges"
+BULLETPROOF_FILE = "bulletproof_asns.txt"
 
 
+# ── Range loader ──────────────────────────────────────────────────────────────
 def _load_ranges_from_dir(directory: str) -> tuple[list, list]:
     entries = []
 
@@ -59,12 +62,30 @@ def _load_ranges_from_dir(directory: str) -> tuple[list, list]:
     return entries, net_keys
 
 
+# ── ASN loader ────────────────────────────────────────────────────────────────
+def _load_bulletproof_asns() -> set[str]:
+    try:
+        asns = set()
+        with open(BULLETPROOF_FILE, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                asns.add(line.upper())
+        print(f"[cloud_check] Bulletproof ASNs: {len(asns):,} loaded")
+        return asns
+    except FileNotFoundError:
+        print(f"[cloud_check] '{BULLETPROOF_FILE}' not found.")
+        return set()
+
+
 # ── Load at import time ───────────────────────────────────────────────────────
-_CLOUD_NETWORKS, _CLOUD_KEYS = _load_ranges_from_dir(CLOUD_RANGES_DIR)
-_CDN_NETWORKS,   _CDN_KEYS   = _load_ranges_from_dir(CDN_RANGES_DIR)
+_CLOUD_NETWORKS,  _CLOUD_KEYS  = _load_ranges_from_dir(CLOUD_RANGES_DIR)
+_CDN_NETWORKS,    _CDN_KEYS    = _load_ranges_from_dir(CDN_RANGES_DIR)
+_BULLETPROOF_ASNS              = _load_bulletproof_asns()
 
 
-# ── Lookup ────────────────────────────────────────────────────────────────────
+# ── IP range lookup ───────────────────────────────────────────────────────────
 def _lookup(ip: str, networks: list, keys: list) -> str | None:
     try:
         ip_int = int(ipaddress.ip_address(ip))
@@ -78,7 +99,7 @@ def _lookup(ip: str, networks: list, keys: list) -> str | None:
         return None
 
 
-# ── Shared row builder ────────────────────────────────────────────────────────
+# ── Shared row builder for range-based checks ─────────────────────────────────
 def _build_rows(df: pd.DataFrame, networks: list, keys: list) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
@@ -117,3 +138,29 @@ def check_cloud_providers(df: pd.DataFrame) -> pd.DataFrame:
 
 def check_cdn_providers(df: pd.DataFrame) -> pd.DataFrame:
     return _build_rows(df, _CDN_NETWORKS, _CDN_KEYS)
+
+
+def check_bulletproof(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or not _BULLETPROOF_ASNS:
+        return pd.DataFrame()
+
+    def normalize_asn(val) -> str:
+        if not val:
+            return ""
+        val = str(val).strip().upper()
+        if not val.startswith("AS"):
+            val = "AS" + val
+        return val
+
+    mask = df["asn"].apply(normalize_asn).isin(_BULLETPROOF_ASNS)
+    df_match = df[mask].copy()
+
+    if df_match.empty:
+        return pd.DataFrame()
+
+    COLS = [
+        "ipAddress", "provider", "asn", "hostname", "organisation", "city", "type",
+        "proxy", "vpn", "tor", "operator_name", "operator_url", "operator_anonymity",
+    ]
+
+    return df_match[[c for c in COLS if c in df_match.columns]].copy()
