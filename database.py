@@ -3,7 +3,7 @@ database.py
 -----------
 Stores and retrieves IP records from SQLite.
 Tables: ip_records, whitelist_matches, wireless_ips,
-        cloud_provider_ips, cdn_edge_ips, bulletproof_hosting
+        cloud_provider_ips, cdn_edge_ips, bulletproof_hosting, grey_hosting
 """
 
 import sqlite3
@@ -136,6 +136,35 @@ def init_db():
             operator_name      TEXT,
             operator_url       TEXT,
             operator_anonymity TEXT,
+            detected_at        TEXT
+        )
+    """)
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS grey_hosting (
+            ipAddress          TEXT PRIMARY KEY,
+            provider           TEXT,
+            asn                TEXT,
+            hostname           TEXT,
+            organisation       TEXT,
+            country            TEXT,
+            city               TEXT,
+            type               TEXT,
+            proxy              INTEGER,
+            vpn                INTEGER,
+            tor                INTEGER,
+            hosting            INTEGER,
+            compromised        INTEGER,
+            scraper            INTEGER,
+            anonymous          INTEGER,
+            operator_name      TEXT,
+            operator_url       TEXT,
+            operator_anonymity TEXT,
+            totalReports       INTEGER,
+            numDistinctUsers   INTEGER,
+            grey_score         REAL,
+            grey_sub_tier      TEXT,
+            grey_signals       TEXT,
             detected_at        TEXT
         )
     """)
@@ -361,6 +390,52 @@ def save_bulletproof(df: pd.DataFrame):
     con.close()
 
 
+def save_grey(df: pd.DataFrame):
+    if df.empty:
+        return
+    init_db()
+    con = sqlite3.connect(DB_PATH)
+    now = datetime.now(timezone.utc).isoformat()
+    for _, row in df.iterrows():
+        con.execute("""
+            INSERT OR REPLACE INTO grey_hosting
+            (ipAddress, provider, asn, hostname, organisation, country, city, type,
+             proxy, vpn, tor, hosting, compromised, scraper, anonymous,
+             operator_name, operator_url, operator_anonymity,
+             totalReports, numDistinctUsers,
+             grey_score, grey_sub_tier, grey_signals,
+             detected_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            row.get("ipAddress"),
+            row.get("provider"),
+            row.get("asn"),
+            row.get("hostname"),
+            row.get("organisation"),
+            row.get("country"),
+            row.get("city"),
+            row.get("type"),
+            int(row.get("proxy"))       if pd.notna(row.get("proxy"))       else 0,
+            int(row.get("vpn"))         if pd.notna(row.get("vpn"))         else 0,
+            int(row.get("tor"))         if pd.notna(row.get("tor"))         else 0,
+            int(row.get("hosting"))     if pd.notna(row.get("hosting"))     else 0,
+            int(row.get("compromised")) if pd.notna(row.get("compromised")) else 0,
+            int(row.get("scraper"))     if pd.notna(row.get("scraper"))     else 0,
+            int(row.get("anonymous"))   if pd.notna(row.get("anonymous"))   else 0,
+            row.get("operator_name"),
+            row.get("operator_url"),
+            row.get("operator_anonymity"),
+            int(row.get("totalReports"))     if pd.notna(row.get("totalReports"))     else 0,
+            int(row.get("numDistinctUsers")) if pd.notna(row.get("numDistinctUsers")) else 0,
+            float(row.get("grey_score"))     if pd.notna(row.get("grey_score"))       else None,
+            row.get("grey_sub_tier"),
+            row.get("grey_signals"),
+            now,
+        ))
+    con.commit()
+    con.close()
+
+
 def load(days: int = 0) -> pd.DataFrame:
     try:
         con = sqlite3.connect(DB_PATH)
@@ -434,6 +509,25 @@ def load_bulletproof() -> pd.DataFrame:
         df = pd.read_sql_query(
             "SELECT * FROM bulletproof_hosting ORDER BY detected_at DESC", con
         )
+        con.close()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def load_grey(days: int = 0, sub_tier: str = None) -> pd.DataFrame:
+    try:
+        con = sqlite3.connect(DB_PATH)
+        params, sql = [], "SELECT * FROM grey_hosting WHERE 1=1"
+        if days > 0:
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+            sql += " AND detected_at >= ?"
+            params.append(cutoff)
+        if sub_tier:
+            sql += " AND grey_sub_tier = ?"
+            params.append(sub_tier)
+        sql += " ORDER BY grey_score DESC, detected_at DESC"
+        df = pd.read_sql_query(sql, con, params=params)
         con.close()
         return df
     except Exception:
