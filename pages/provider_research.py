@@ -1,600 +1,325 @@
 """
-provider_research_agent.py
+pages/provider_research.py
 --------------------------
-Free-stack research agent for hosting provider intel.
-Sources (all free):
-  - bgpview.io  → ASN metadata, allocation date, abuse contacts
-  - RDAP (ARIN) → abuse mailbox
-  - DuckDuckGo  → negative press search (Krebs, Correctiv, Spamhaus)
-  - Gemini 2.0 Flash + google_search → structured intel extraction
+Streamlit page for grey-hosting provider research.
 
-Output: structured JSON per ASN (saved via provider_intel_db).
-Rate-limited to fit Gemini free tier (15 RPM / 1500 RPD).
+Layout:
+  1. Table of UNRESEARCHED grey-hosting IPs (those waiting for an agent run)
+  2. ASN input + Research button
+  3. Result panel with colored score bar + explanation
+
+Save this file as: pages/provider_research.py
 """
 
-import os
 import json
-import time
-import requests
-from datetime import datetime, timezone
 from typing import Optional
-from dotenv import load_dotenv
+import streamlit as st
+import pandas as pd
 
-load_dotenv()
+from provider_research_agent import research_provider, GEMINI_API_KEY
+from provider_intel_db import (
+    save_research_result, is_researched, load_intel,
+)
+from grey_check import (
+    add_grey_scores, explain_intel_contribution, project_asn_tier_from_intel,
+    _asn_to_int,
+)
+from database import save_grey
 
-GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL    = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")  # override via .env if needed
-GEMINI_ENDPOINT = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-
-REQUEST_TIMEOUT          = 60
-GEMINI_RATE_LIMIT_SLEEP  = 4.5  # 15 RPM free tier → 4s + buffer
-BGPVIEW_RATE_LIMIT_SLEEP = 1.0
-DDG_MAX_RESULTS          = 5
-
-# Grounding has a separate daily quota (500/day on gemini-2.0-flash free tier).
-# Set USE_GEMINI_GROUNDING=false in .env to disable if you hit grounding quota.
-USE_GEMINI_GROUNDING = os.getenv("USE_GEMINI_GROUNDING", "true").lower() != "false"
-
-
-# ── Trusted source whitelist ──────────────────────────────────────────────────
-# A claim is only counted as valid if its source URL contains one of these
-# domains. Provider self-claims are NEVER trusted.
-
-TRUSTED_SOURCES = {
-    "iso_27001": [
-        "iso.org",
-        "bsigroup.com",          # BSI UK
-        "tuvsud.com", "tuv.com", # TÜV SÜD, TÜV Rheinland
-        "dnv.com",               # DNV
-        "dekra.com",
-        "sgs.com",
-        "bureauveritas.com",
-        "intertek.com",
-        "lrqa.com",              # Lloyd's Register
-        "schellman.com",
-        "a-lign.com",
-    ],
-    "soc2": [
-        "aicpa.org",
-        "deloitte.com", "ey.com", "kpmg.com", "pwc.com",   # Big 4
-        "bdo.com", "rsmus.com", "grantthornton.com",
-        "schellman.com", "a-lign.com",                      # Niche but accredited
-    ],
-    "fedramp": [
-        "marketplace.fedramp.gov",
-        "fedramp.gov",
-    ],
-    "public_company": [
-        "sec.gov",
-        "wikipedia.org", "en.wikipedia.org",
-        "nyse.com", "nasdaq.com",
-        "lse.co.uk", "londonstockexchange.com",
-        "investor.gov",
-    ],
-    "negative_press": [
-        "krebsonsecurity.com",
-        "correctiv.org",
-        "spamhaus.org",
-        "domaintools.com",
-        "recordedfuture.com",
-        "bleepingcomputer.com",
-        "therecord.media",
-        "wired.com",
-        "arstechnica.com",
-        "theregister.com",
-        "darkreading.com",
-        "ec.europa.eu",          # EU sanctions
-        "treasury.gov",          # US OFAC sanctions
-        "gov.uk",                # UK sanctions
-    ],
-}
-
-# Flat list of all trusted domains (for prompt)
-ALL_TRUSTED_DOMAINS = sorted({d for lst in TRUSTED_SOURCES.values() for d in lst})
+st.set_page_config(page_title="Provider Research", layout="wide", page_icon="🔍")
+st.title("🔍 Provider Research")
+st.page_link("app.py", label="← Home Page")
+st.divider()
 
 
-# ── Free APIs (no key required) ───────────────────────────────────────────────
+# ── How the agent works (informational) ──────────────────────────────────────
+with st.expander("ℹ️  How this agent works (trusted sources only)"):
+    st.markdown("""
+The agent uses **Gemini 2.0 Flash + Google Search grounding + DuckDuckGo + bgpview.io + RDAP**
+to gather provider intel. All free. No manual review needed because:
 
-def _fetch_bgpview(asn_num: str) -> dict:
-    """Try bgpview.io first."""
-    r = requests.get(
-        f"https://api.bgpview.io/asn/{asn_num}",
-        timeout=10,
-        headers={"User-Agent": "ThreatWatch/1.0"},
-    )
-    r.raise_for_status()
-    data = r.json().get("data", {}) or {}
-    return {
-        "asn":             asn_num,
-        "name":            data.get("name"),
-        "description":     data.get("description_short"),
-        "country_code":    data.get("country_code"),
-        "date_allocated":  data.get("date_allocated"),
-        "website":         data.get("website"),
-        "email_contacts":  data.get("email_contacts", []),
-        "abuse_contacts":  data.get("abuse_contacts", []),
-        "rir_allocation":  (data.get("rir_allocation") or {}).get("rir_name"),
-        "_source":         "bgpview.io",
-    }
+- **Provider self-claims are rejected.** A hosting company's own page saying "we are ISO certified" is NOT trusted.
+- **Trusted sources only.** Each claim must come from one of:
+  - **ISO 27001:** iso.org, bsigroup.com, tuvsud.com, dnv.com, dekra.com, sgs.com, ...
+  - **SOC 2:** aicpa.org or Big-4 auditor (deloitte, ey, kpmg, pwc)
+  - **FedRAMP:** marketplace.fedramp.gov ONLY
+  - **Public company:** sec.gov, en.wikipedia.org, nyse.com, nasdaq.com
+  - **Negative press:** krebsonsecurity.com, correctiv.org, spamhaus.org, domaintools.com, ...
+- **Untrusted → null.** If no trusted source is found, the field is `null` (unknown).
+- **Python post-validates.** Even if the LLM bypasses the rule, the response is filtered before saving.
+- **Crypto payment is the only exception** — provider's own checkout page is acceptable.
+
+Once researched, an ASN is **never re-queried** (deduplicated automatically).
+""")
 
 
-def _fetch_ripestat(asn_num: str) -> dict:
-    """Fallback: RIPE Stat (always reachable, very reliable)."""
-    # 1. AS overview
-    r = requests.get(
-        f"https://stat.ripe.net/data/as-overview/data.json?resource=AS{asn_num}",
-        timeout=10,
-        headers={"User-Agent": "ThreatWatch/1.0"},
-    )
-    r.raise_for_status()
-    data = r.json().get("data", {}) or {}
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
-    holder = data.get("holder")     # e.g. "HETZNER-AS, DE"
-    name, _, cc = (holder or "").partition(", ")
-
-    out = {
-        "asn":          asn_num,
-        "name":         (name or "").strip() or None,
-        "description":  holder,
-        "country_code": (cc or "").strip().upper() or None,
-        "_source":      "stat.ripe.net",
-    }
-
-    # 2. AS allocation date (optional)
+def _normalize_asn_input(text: str) -> Optional[int]:
+    s = (text or "").upper().strip().replace("AS", "")
     try:
-        r2 = requests.get(
-            f"https://stat.ripe.net/data/whois/data.json?resource=AS{asn_num}",
-            timeout=8,
-            headers={"User-Agent": "ThreatWatch/1.0"},
-        )
-        r2.raise_for_status()
-        whois = r2.json().get("data", {}) or {}
-        for rec in whois.get("records", []) or []:
-            for kv in rec or []:
-                if kv.get("key", "").lower() in ("created", "regdate"):
-                    out["date_allocated"] = kv.get("value")
-                    break
-    except Exception:
-        pass
-
-    return out
-
-
-def get_asn_info(asn) -> dict:
-    """
-    Fetch ASN metadata. Tries bgpview.io first, falls back to RIPE Stat on failure.
-    """
-    asn_num = str(asn).upper().replace("AS", "").strip()
-
-    # 1. bgpview
-    try:
-        info = _fetch_bgpview(asn_num)
-        if info.get("name"):
-            return info
-    except Exception as e:
-        print(f"[research] bgpview error AS{asn_num}: {e} — trying RIPE Stat fallback")
-
-    # 2. RIPE Stat fallback
-    try:
-        info = _fetch_ripestat(asn_num)
-        if info.get("name"):
-            print(f"[research] AS{asn_num} resolved via RIPE Stat: {info['name']}")
-            return info
-    except Exception as e:
-        print(f"[research] RIPE Stat error AS{asn_num}: {e}")
-
-    return {"asn": asn_num}
-
-
-def get_rdap_abuse_contact(ip: str) -> Optional[str]:
-    """Fetch abuse contact via RDAP. Free, no key."""
-    try:
-        r = requests.get(
-            f"https://rdap.arin.net/registry/ip/{ip}",
-            timeout=15,
-            headers={"User-Agent": "ThreatWatch/1.0", "Accept": "application/rdap+json"},
-        )
-        if r.status_code != 200:
-            return None
-        data = r.json()
-        for entity in data.get("entities", []):
-            roles = entity.get("roles", []) or []
-            if "abuse" in roles:
-                vcard = entity.get("vcardArray", [])
-                if len(vcard) > 1:
-                    for item in vcard[1]:
-                        if len(item) >= 4 and item[0] == "email":
-                            return item[3]
-        return None
-    except Exception as e:
-        print(f"[research] RDAP error {ip}: {e}")
+        return int(s)
+    except (ValueError, TypeError):
         return None
 
 
-def search_negative_press(provider_name: str) -> list:
-    """DuckDuckGo search for negative press mentions. Free, no key."""
-    if not provider_name:
-        return []
-    # New package name is `ddgs`. Old is `duckduckgo_search` (deprecated).
-    try:
-        from ddgs import DDGS
-    except ImportError:
-        try:
-            from duckduckgo_search import DDGS
-        except ImportError:
-            print("[research] Neither 'ddgs' nor 'duckduckgo-search' installed; "
-                  "run `pip install ddgs` to enable negative-press search")
-            return []
+def _render_score_bar(score: float, tier: str, label_extra: str = ""):
+    """Render a colored horizontal bar based on tier."""
+    colors = {
+        "grey_high": ("#e74c3c", "HIGH — block candidate"),
+        "grey_mid":  ("#f39c12", "MID — review queue"),
+        "grey_low":  ("#27ae60", "LOW — monitor only"),
+        "unknown":   ("#95a5a6", "UNKNOWN"),
+    }
+    color, label = colors.get(tier, ("#95a5a6", "UNKNOWN"))
+    pct = max(2.0, min(100.0, (score / 10.0) * 100.0))   # min 2% so empty bar isn't invisible
 
-    queries = [
-        f'"{provider_name}" krebsonsecurity',
-        f'"{provider_name}" bulletproof hosting',
-        f'"{provider_name}" spamhaus abuse',
-        f'"{provider_name}" correctiv',
+    html = f"""
+    <div style="background:#f0f0f0; border-radius: 10px; padding: 6px; margin: 14px 0;">
+        <div style="background:{color}; width:{pct}%; padding: 16px 22px; border-radius: 6px; color: white; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+            <div style="font-size: 28px; font-weight: bold; line-height:1;">{score:.1f} <span style="font-size:16px; opacity:0.85;">/ 10</span></div>
+            <div style="font-size: 13px; margin-top: 6px; letter-spacing: 0.5px;">{label}{(' · ' + label_extra) if label_extra else ''}</div>
+        </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def _yes_no(v):
+    if v == 1: return "✅ Yes"
+    if v == 0: return "❌ No"
+    return "❓ Unknown"
+
+
+def _rescore_session_grey(asn_int: int):
+    """After research: rescore IPs from this ASN in current session + save to DB."""
+    if "grey_ips" not in st.session_state:
+        return 0
+    df = st.session_state["grey_ips"]
+    if df.empty:
+        return 0
+
+    mask = df["asn"].apply(_asn_to_int) == asn_int
+    if not mask.any():
+        return 0
+
+    rescored = add_grey_scores(df[mask].copy())
+    # Update session_state with new scores
+    for idx in rescored.index:
+        df.at[idx, "grey_score"]    = rescored.at[idx, "grey_score"]
+        df.at[idx, "grey_sub_tier"] = rescored.at[idx, "grey_sub_tier"]
+        df.at[idx, "grey_signals"]  = rescored.at[idx, "grey_signals"]
+
+    save_grey(rescored)
+    st.session_state["grey_ips"] = df
+    return int(mask.sum())
+
+
+# ── Pre-flight checks ────────────────────────────────────────────────────────
+if not GEMINI_API_KEY:
+    st.error("`GEMINI_API_KEY` not set in `.env`. Get a free key at https://aistudio.google.com/app/apikey")
+    st.stop()
+
+if "grey_ips" not in st.session_state or st.session_state["grey_ips"].empty:
+    st.info("Run the main pipeline first (Fetch & Process Data) to populate grey-hosting data.")
+    st.stop()
+
+
+# ── 1. UNRESEARCHED IPs TABLE ───────────────────────────────────────────────
+st.subheader("1️⃣ Unresearched Grey Hosting IPs")
+
+df_grey = st.session_state["grey_ips"]
+df_unknown = df_grey[df_grey["grey_sub_tier"] == "unknown"].copy()
+
+if df_unknown.empty:
+    st.success("✅ All grey-hosting ASNs in the current batch have been researched.")
+else:
+    st.caption(
+        f"📋 {len(df_unknown):,} IPs across **{df_unknown['asn'].nunique()}** distinct ASNs are waiting to be researched. "
+        f"Pick an ASN from the table below and paste it into the input."
+    )
+
+    UNK_COLS = [
+        "ipAddress", "provider", "asn", "organisation",
+        "country", "city", "hostname",
+        "proxy", "vpn", "tor",
+        "totalReports", "numDistinctUsers",
     ]
-
-    results = []
-    seen_urls = set()
-    try:
-        with DDGS() as ddgs:
-            for q in queries:
-                try:
-                    for hit in ddgs.text(q, max_results=DDG_MAX_RESULTS):
-                        url = hit.get("href") or hit.get("url")
-                        if not url or url in seen_urls:
-                            continue
-                        seen_urls.add(url)
-                        # Filter to interesting domains only
-                        if any(d in url for d in [
-                            "krebsonsecurity.com", "correctiv.org",
-                            "spamhaus.org", "domaintools.com",
-                            "recordedfuture.com", "bleepingcomputer.com",
-                            "therecord.media", "wired.com",
-                        ]):
-                            results.append({
-                                "title": hit.get("title", ""),
-                                "url":   url,
-                                "snippet": (hit.get("body") or "")[:300],
-                            })
-                except Exception as e:
-                    print(f"[research] DDG query failed '{q}': {e}")
-    except Exception as e:
-        print(f"[research] DDG init failed: {e}")
-
-    return results[:8]
-
-
-# ── Gemini agent ──────────────────────────────────────────────────────────────
-
-RESEARCH_PROMPT = """\
-You are a strict, evidence-based research agent. Gather public information about a hosting provider.
-
-★ THE PROVIDER YOU MUST RESEARCH:
-   ASN:           AS{asn}
-   Provider name: {name_hint}
-   (This name is authoritative — it comes from ProxyCheck / bgpview / RDAP enrichment.
-    DO NOT search for "which company owns AS{asn}". Use the name above.
-    DO NOT substitute a different company even if Google search suggests one.)
-
-CRITICAL RULES — read carefully:
-1. For EACH claim you make, set "source" to the EXACT URL where you found the evidence.
-2. ONLY trust the sources listed below per field. The provider's OWN website is
-   NEVER a valid source for compliance, public-company, or press claims.
-3. If you cannot find evidence from a trusted source, set the value to null.
-   It is BETTER to say "unknown" than to use an untrusted source.
-4. NEVER fabricate URLs. If you can't find evidence, the source is null.
-5. Crypto payment is the ONE exception: provider's own payment-methods page is OK.
-6. If the name hint says "(unknown)", DO NOT GUESS the provider name. Set provider_name=null.
-
-TRUSTED SOURCES PER FIELD:
-- ISO 27001: must be from an accredited certification body — iso.org, bsigroup.com,
-  tuvsud.com, tuv.com, dnv.com, dekra.com, sgs.com, bureauveritas.com,
-  intertek.com, lrqa.com, schellman.com, a-lign.com.
-- SOC 2: must be from auditor — aicpa.org, deloitte.com, ey.com, kpmg.com, pwc.com,
-  bdo.com, rsmus.com, grantthornton.com, schellman.com, a-lign.com.
-- FedRAMP: ONLY marketplace.fedramp.gov or fedramp.gov.
-- Public company: sec.gov, en.wikipedia.org, nyse.com, nasdaq.com, lse.co.uk.
-- Negative press: krebsonsecurity.com, correctiv.org, spamhaus.org, domaintools.com,
-  recordedfuture.com, bleepingcomputer.com, therecord.media, wired.com,
-  arstechnica.com, theregister.com, darkreading.com, ec.europa.eu, treasury.gov,
-  gov.uk.
-- Crypto payment: provider's own checkout/billing/payment page is acceptable.
-
-Provider:
-- ASN: AS{asn}
-- Name hint: {name_hint}
-- BGPView data: {bgpview_summary}
-- Negative press pre-fetched hits (must verify these are real): {neg_press}
-
-Use google_search to verify and fill the JSON below. Return STRICT JSON.
-No markdown, no commentary, no code fences. JUST the JSON object:
-
-{{
-  "asn": {asn},
-  "provider_name": "...",
-  "website": "https://...",
-  "country_code": "DE",
-  "iso_27001":      {{"certified": true|false|null, "source": "URL or null", "notes": "..."}},
-  "soc2":           {{"certified": true|false|null, "type": "1"|"2"|null, "source": "URL or null"}},
-  "fedramp":        {{"certified": true|false|null, "level": "moderate"|"high"|null, "source": "URL or null"}},
-  "accepts_crypto": {{"value": true|false|null, "coins": [], "source": "URL or null"}},
-  "public_company": {{"value": true|false|null, "ticker": "..." or null, "source": "URL or null"}},
-  "negative_press": [{{"source_domain": "krebsonsecurity.com", "url": "...", "summary": "..."}}],
-  "confidence_overall": 0.0,
-  "notes": "..."
-}}
-
-Critical: Output ONLY the JSON object. No prose before or after.
-Untrusted source → value must be null.
-"""
-
-
-def _strip_code_fences(text: str) -> str:
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines)
-    return text.strip()
-
-
-def _extract_json(text: str) -> dict:
-    text = _strip_code_fences(text)
-    start = text.find("{")
-    end   = text.rfind("}")
-    if start < 0 or end < 0:
-        raise ValueError(f"No JSON found in: {text[:300]}")
-    return json.loads(text[start:end + 1])
-
-
-def research_with_gemini(asn, name_hint: str = "",
-                         bgpview_data: dict = None,
-                         neg_press: list = None) -> dict:
-    """Call Gemini 2.0 Flash with google_search grounding."""
-    if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY not set in .env")
-
-    asn_str = str(asn).upper().replace("AS", "").strip()
-    bgpview_summary = json.dumps(bgpview_data or {}, ensure_ascii=False)[:600]
-    neg_press_summary = json.dumps(neg_press or [], ensure_ascii=False)[:800]
-
-    prompt = RESEARCH_PROMPT.format(
-        asn=asn_str,
-        name_hint=name_hint or "(unknown)",
-        bgpview_summary=bgpview_summary,
-        neg_press=neg_press_summary,
+    st.dataframe(
+        df_unknown[[c for c in UNK_COLS if c in df_unknown.columns]],
+        use_container_width=True,
+        hide_index=True,
+        height=350,
     )
 
-    body = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.1,
-            "topP": 0.95,
-            "maxOutputTokens": 4096,
-        },
-    }
-    if USE_GEMINI_GROUNDING:
-        body["tools"] = [{"google_search": {}}]
+st.divider()
 
-    # Up to 3 attempts with exponential backoff for rate limits
-    max_attempts = 3
-    backoff_seconds = [30, 60, 90]
-    r = None
-    last_error = None
 
-    for attempt in range(max_attempts):
+# ── 2. RESEARCH INPUT ───────────────────────────────────────────────────────
+st.subheader("2️⃣ Research an ASN")
+
+col_in, col_btn = st.columns([3, 1])
+with col_in:
+    asn_input = st.text_input(
+        "Enter the ASN you want to research:",
+        placeholder="e.g.  24940    or    AS24940",
+        label_visibility="collapsed",
+    )
+with col_btn:
+    do_research = st.button("🚀 Research", type="primary", use_container_width=True)
+
+
+if do_research:
+    asn_int = _normalize_asn_input(asn_input)
+
+    if asn_int is None:
+        st.error("Invalid ASN. Type a number like `24940` or `AS24940`.")
+    elif is_researched(asn_int):
+        st.warning(f"ℹ️ AS{asn_int} is already researched. Result is shown below.")
+        st.session_state["last_research_asn"] = asn_int
+    else:
+        # Try to pull a name hint from the current grey batch
+        hint = ""
+        if not df_unknown.empty:
+            match = df_unknown[df_unknown["asn"].apply(_asn_to_int) == asn_int]
+            if not match.empty:
+                hint = match.iloc[0].get("organisation") or ""
+
+        with st.spinner(f"Researching AS{asn_int} via Gemini + DuckDuckGo + bgpview.io..."):
+            try:
+                result = research_provider(asn_int, hint)
+                save_research_result(result)
+                # Rescore current session IPs from this ASN
+                rescored_count = _rescore_session_grey(asn_int)
+                st.success(
+                    f"✅ AS{asn_int} researched. "
+                    f"{rescored_count} IP(s) in the current batch rescored."
+                )
+                st.session_state["last_research_asn"] = asn_int
+            except Exception as e:
+                st.error(f"Research failed: {e}")
+
+
+# ── 3. RESULT PANEL ──────────────────────────────────────────────────────────
+if "last_research_asn" in st.session_state:
+    asn_int = st.session_state["last_research_asn"]
+    intel = load_intel(asn_int)
+
+    st.divider()
+    st.subheader(f"3️⃣ Result — AS{asn_int}")
+
+    if not intel:
+        st.warning("No intel found for this ASN.")
+    else:
+        # ── Score bar ───────────────────────────────────────────────────────
+        projected_score, projected_tier = project_asn_tier_from_intel(intel)
+        _render_score_bar(
+            projected_score, projected_tier,
+            label_extra=f"projected baseline for {intel.get('provider_name') or 'AS' + str(asn_int)}",
+        )
+
+        st.caption(
+            "👆 This is the **baseline projected score** from provider intel alone. "
+            "Each individual IP from this ASN may add +0 to +3 from IP-specific signals "
+            "(PTR pattern, AbuseIPDB report count, ProxyCheck flags)."
+        )
+
+        # ── Provider facts ──────────────────────────────────────────────────
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("##### 📋 Provider facts")
+            st.write(f"- **Name:** {intel.get('provider_name') or '—'}")
+            st.write(f"- **Website:** {intel.get('website') or '—'}")
+            st.write(f"- **Country:** {intel.get('country_code') or '—'}")
+            st.write(f"- **ASN age:** {intel.get('asn_age_years') or '—'} years")
+            st.write(f"- **Abuse mailbox:** {intel.get('abuse_mailbox') or '—'}")
+
+        with c2:
+            st.markdown("##### 🛡️ Compliance & payments")
+            st.write(f"- **ISO 27001:** {_yes_no(intel.get('iso_27001'))}")
+            st.write(f"- **SOC 2:** {_yes_no(intel.get('soc2'))}")
+            st.write(f"- **FedRAMP:** {_yes_no(intel.get('fedramp'))}")
+            st.write(f"- **Crypto:** {_yes_no(intel.get('accepts_crypto'))} ({intel.get('crypto_coins') or '—'})")
+            st.write(f"- **Public co:** {_yes_no(intel.get('public_company'))} ({intel.get('company_ticker') or '—'})")
+            st.write(f"- **Negative press:** {intel.get('negative_press_count') or 0}")
+
+        # ── Negative press details ──────────────────────────────────────────
         try:
-            r = requests.post(
-                f"{GEMINI_ENDPOINT}?key={GEMINI_API_KEY}",
-                json=body,
-                timeout=REQUEST_TIMEOUT,
-                headers={"Content-Type": "application/json"},
+            neg = json.loads(intel.get("negative_press_json") or "[]")
+            if neg:
+                st.markdown("##### 🚨 Negative press (trusted sources only)")
+                for n in neg:
+                    domain = n.get("source_domain") or "source"
+                    url = n.get("url", "")
+                    summary = n.get("summary", "")
+                    st.markdown(f"- [{domain}]({url}) — {summary[:300]}")
+        except Exception:
+            pass
+
+        # ── Score breakdown ─────────────────────────────────────────────────
+        st.markdown("##### 🧮 How the score was computed")
+        contributions = explain_intel_contribution(intel)
+
+        if not contributions:
+            st.write("No intel signals fired — score is purely 5.0 (neutral baseline).")
+        else:
+            breakdown = []
+            for sig, val in contributions:
+                sign = "↓" if val < 0 else "↑"
+                color = "green" if val < 0 else "red"
+                breakdown.append({
+                    "signal": sig,
+                    "direction": sign,
+                    "contribution": f"{val:+.1f}",
+                })
+            df_break = pd.DataFrame(breakdown)
+            st.dataframe(df_break, use_container_width=True, hide_index=True)
+
+            total_intel = sum(v for _, v in contributions)
+            st.markdown(
+                f"**Intel total:** `{total_intel:+.1f}`  →  "
+                f"baseline = `max(0, min(10, total + 5))` = **{projected_score:.1f}**"
             )
 
-            if r.status_code == 429:
-                # Read error body for diagnostics
-                try:
-                    err_detail = r.json().get("error", {}).get("message", "")[:200]
-                except Exception:
-                    err_detail = ""
-                wait = backoff_seconds[attempt]
-                print(f"[research] Gemini 429 (attempt {attempt+1}/{max_attempts}). "
-                      f"Detail: {err_detail or '(no message)'} — waiting {wait}s...")
-                time.sleep(wait)
-                continue
+        # ── Tier meaning ────────────────────────────────────────────────────
+        with st.expander("ℹ️ What do the tiers mean?"):
+            st.markdown("""
+| Score | Tier | Meaning | Action |
+|-------|------|---------|--------|
+| **0 – 3** | 🟢 **grey_low** | Behaves like mainstream cloud — mature provider, certified, good jurisdiction | Monitor only, no block |
+| **3 – 6** | 🟡 **grey_mid** | Mixed signals — neither clearly safe nor clearly bad | Manual review per IP |
+| **6 – 10** | 🔴 **grey_high** | Multiple bulletproof-leaning signals — high abuse rate, weak compliance, negative press | Blacklist candidate |
 
-            if r.status_code == 403:
-                detail = ""
-                try:
-                    detail = r.json().get("error", {}).get("message", "")[:300]
-                except Exception:
-                    pass
-                raise RuntimeError(f"Gemini 403 PERMISSION_DENIED — check API key / region. {detail}")
+**Score formula:**
+```
+score = clip(intel_contribution + ip_level_signals + 5, 0, 10)
+```
 
-            r.raise_for_status()
-            result = r.json()
-            last_error = None
-            break
+**Negative contributions** (lower score, mainstream-leaning):
+- OECD country: -1.0
+- ISO 27001 / SOC 2 certified: -1.0 each
+- FedRAMP certified: -1.5
+- ASN age > 10 years: -1.0
+- Public company: -1.0
+- Doesn't accept crypto: -0.5
+- Has valid abuse mailbox: -0.3
 
-        except requests.exceptions.RequestException as e:
-            last_error = e
-            print(f"[research] Network error attempt {attempt+1}/{max_attempts}: {e}")
-            time.sleep(5)
+**Positive contributions** (higher score, bulletproof-leaning):
+- Higher-risk country (RU, CN, MD, etc.): +2.0
+- Young ASN (<2 years): +1.0
+- Accepts crypto: +1.0
+- Negative press articles: +1.0 to +2.0
+- Random/algorithmic PTR: +1.5
+- Generic PTR (`vps-…`, `unmanaged.…`): +0.5
+- High ASN share in current batch: +1.0 to +2.0
+- High AbuseIPDB report count: +0.5 to +1.0
+- ProxyCheck flags (compromised, scraper, proxy): +0.5 to +1.0 each
+""")
 
-    if last_error is not None and r is None:
-        raise RuntimeError(f"Gemini API error after {max_attempts} attempts: {last_error}")
-
-    if r is not None and r.status_code == 429:
-        # All retries exhausted on rate limit
-        raise RuntimeError(
-            "Gemini quota exhausted (429 after 3 retries). "
-            "Possible causes: daily 1500 RPD limit reached, "
-            "or grounded-search daily 500 limit reached. "
-            "Check https://aistudio.google.com/usage"
-        )
-
-    try:
-        result = r.json()
-    except Exception as e:
-        raise RuntimeError(f"Gemini response not JSON: {e}")
-
-    try:
-        text = result["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError, TypeError):
-        raise RuntimeError(f"Unexpected Gemini response shape: {str(result)[:500]}")
-
-    try:
-        return _extract_json(text)
-    except (ValueError, json.JSONDecodeError) as e:
-        raise RuntimeError(f"Invalid JSON from Gemini: {e}\nText: {text[:500]}")
-
-
-# ── Trusted-source post-validation ────────────────────────────────────────────
-
-def _source_in_trusted(source_url: str, field: str) -> bool:
-    """Return True if the URL contains a trusted domain for the given field."""
-    if not source_url or not isinstance(source_url, str):
-        return False
-    url_lower = source_url.lower()
-    trusted = TRUSTED_SOURCES.get(field, [])
-    return any(d in url_lower for d in trusted)
-
-
-def _validate_intel(intel: dict) -> dict:
-    """
-    Enforce trusted-source whitelist. If a positive claim lacks a trusted source,
-    rewrite it to null and log the rejection in 'notes'.
-    Crypto-payment is exempt (provider's own checkout page is acceptable).
-    """
-    if not isinstance(intel, dict):
-        return intel
-
-    rejected = []
-
-    # iso_27001 / soc2 / fedramp — must have trusted certifier source
-    for field in ("iso_27001", "soc2", "fedramp"):
-        sec = intel.get(field)
-        if isinstance(sec, dict):
-            certified = sec.get("certified")
-            src = sec.get("source")
-            if certified is True and not _source_in_trusted(src, field):
-                rejected.append(f"{field}: untrusted source {src!r}")
-                sec["certified"] = None
-                sec["source"] = None
-                sec["notes"] = (sec.get("notes") or "") + " [rejected: untrusted source]"
-
-    # public_company — trusted source required for True
-    pc = intel.get("public_company")
-    if isinstance(pc, dict):
-        if pc.get("value") is True and not _source_in_trusted(pc.get("source"), "public_company"):
-            rejected.append(f"public_company: untrusted source {pc.get('source')!r}")
-            pc["value"] = None
-            pc["ticker"] = None
-            pc["source"] = None
-
-    # negative_press — filter list to trusted domains only
-    np_list = intel.get("negative_press") or []
-    if isinstance(np_list, list):
-        kept = []
-        for item in np_list:
-            if not isinstance(item, dict):
-                continue
-            url = item.get("url") or ""
-            if _source_in_trusted(url, "negative_press"):
-                kept.append(item)
-            else:
-                rejected.append(f"negative_press: untrusted {url!r}")
-        intel["negative_press"] = kept
-
-    # accepts_crypto — exempt (provider's own page acceptable)
-
-    # Record validation summary
-    if rejected:
-        intel["_validation_rejected"] = rejected
-        print(f"[research] Validation rejected {len(rejected)} untrusted claims")
-
-    return intel
-
-
-# ── Main entry point ──────────────────────────────────────────────────────────
-
-def research_provider(asn, name_hint: str = "") -> dict:
-    """
-    Full research pipeline for one ASN.
-    Returns: dict with 'bgpview', 'intel', 'researched_on' keys.
-    """
-    asn_str = str(asn).upper().replace("AS", "").strip()
-    print(f"[research] AS{asn_str}: fetching bgpview.io...")
-    bgpview = get_asn_info(asn_str)
-    time.sleep(BGPVIEW_RATE_LIMIT_SLEEP)
-
-    hint = name_hint or bgpview.get("name") or bgpview.get("description") or ""
-    print(f"[research] AS{asn_str}: searching negative press (DDG) for '{hint}'...")
-    neg_press = search_negative_press(hint) if hint else []
-
-    print(f"[research] AS{asn_str}: querying Gemini...")
-    try:
-        intel = research_with_gemini(asn_str, hint, bgpview, neg_press)
-        intel = _validate_intel(intel)   # ★ Untrusted sources rewritten to null
-    except Exception as e:
-        print(f"[research] AS{asn_str}: Gemini failed: {e}")
-        intel = {"error": str(e), "confidence_overall": 0.0}
-
-    return {
-        "asn":            int(asn_str),
-        "bgpview":        bgpview,
-        "neg_press_raw":  neg_press,
-        "intel":          intel,
-        "researched_on":  datetime.now(timezone.utc).isoformat(),
-    }
-
-
-def batch_research(asns: list, name_hints: dict = None) -> list:
-    """
-    Research multiple ASNs with Gemini rate limiting.
-    name_hints: optional {asn_int_or_str: hint_string}
-    """
-    name_hints = name_hints or {}
-    results = []
-    total = len(asns)
-
-    for i, asn in enumerate(asns, 1):
-        asn_str = str(asn).upper().replace("AS", "").strip()
-        hint = (
-                name_hints.get(asn) or
-                name_hints.get(asn_str) or
-                name_hints.get(f"AS{asn_str}") or
-                name_hints.get(int(asn_str) if asn_str.isdigit() else None) or
-                ""
-        )
-        print(f"\n[research] === {i}/{total} → AS{asn_str} ===")
-        try:
-            r = research_provider(asn_str, hint)
-            results.append(r)
-        except Exception as e:
-            print(f"[research] AS{asn_str} hard failure: {e}")
-            results.append({"asn": int(asn_str) if asn_str.isdigit() else None,
-                            "error": str(e),
-                            "researched_on": datetime.now(timezone.utc).isoformat()})
-
-        if i < total:
-            time.sleep(GEMINI_RATE_LIMIT_SLEEP)
-
-    print(f"\n[research] Batch complete: {len(results)} results")
-    return results
-
-
-if __name__ == "__main__":
-    # CLI smoke test — only runs when this file is executed DIRECTLY.
-    # Streamlit imports the module, so this block is NOT triggered from the app.
-    # To run: `python provider_research_agent.py AS24940 [AS16276 ...]`
-    import sys
-    if len(sys.argv) < 2:
-        print("Usage: python provider_research_agent.py AS<number> [AS<number> ...]")
-        sys.exit(0)
-    asns = [a for a in sys.argv[1:] if a]
-    out = batch_research(asns)
-    print(json.dumps(out, indent=2, ensure_ascii=False))
+        # ── Raw research JSON for audit ─────────────────────────────────────
+        with st.popover("📄 Raw research JSON (audit)"):
+            try:
+                raw = json.loads(intel.get("raw_intel_json") or "{}")
+                st.json(raw)
+            except Exception:
+                st.code(intel.get("raw_intel_json") or "")
