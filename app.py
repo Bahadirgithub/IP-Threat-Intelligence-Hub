@@ -15,7 +15,7 @@ from enrichment import enrich
 from database import (
     save, save_whitelist, save_wireless,
     save_cloud, save_cdn, save_bulletproof, save_grey,
-    record_count
+    record_count,
 )
 from whitelist import check_whitelist
 from cross_check import verify_business_ips
@@ -28,17 +28,17 @@ st.title("🛡️ ThreatWatch — Security Dashboard")
 
 def highlight_corrected_type(data):
     """Highlights 'type' cell orange if corrected by ipapi.is."""
-    styles = pd.DataFrame('', index=data.index, columns=data.columns)
-    if '_api_corrected' in data.columns:
-        mask = data['_api_corrected'] == True
-        styles.loc[mask, 'type'] = 'background-color: #FFA500; color: white; font-weight: bold;'
+    styles = pd.DataFrame("", index=data.index, columns=data.columns)
+    if "_api_corrected" in data.columns:
+        mask = data["_api_corrected"] == True
+        styles.loc[mask, "type"] = "background-color: #FFA500; color: white; font-weight: bold;"
     return styles
 
 
 if st.button("Fetch & Process Data"):
     with st.spinner("Running pipeline: AbuseIPDB → ProxyCheck → Whitelist → ip-api → Cloud → CDN → Bulletproof → Grey..."):
         try:
-            df_raw      = fetch_blacklist()
+            df_raw = fetch_blacklist()
             df_enriched = enrich(df_raw)
 
             df_white, wl_cnt, _ = check_whitelist(df_enriched)
@@ -51,11 +51,11 @@ if st.button("Fetch & Process Data"):
 
             # Cloud, CDN, Bulletproof extraction
             df_cloud = check_cloud_providers(df_final)
-            df_cdn   = check_cdn_providers(df_final)
-            df_bp    = check_bulletproof(df_final)
+            df_cdn = check_cdn_providers(df_final)
+            df_bp = check_bulletproof(df_final)
 
-            # Grey hosting — everything that's hosting but not cloud/cdn/bp
-            df_grey  = check_grey_hosting(df_final, df_cloud, df_cdn, df_bp)
+            # Grey hosting — everything that's hosting but not cloud/CDN/bulletproof
+            df_grey = check_grey_hosting(df_final, df_cloud, df_cdn, df_bp)
 
             save(df_final.drop(columns=["_api_corrected"]))
             save_whitelist(df_white)
@@ -66,14 +66,14 @@ if st.button("Fetch & Process Data"):
             save_grey(df_grey)
 
             white_ip_set = set(df_white["ipAddress"].unique()) if not df_white.empty else set()
-            st.session_state["all_ips"]      = df_final[~df_final["ipAddress"].isin(white_ip_set)].copy()
-            st.session_state["white_ips"]    = df_white
+            st.session_state["all_ips"] = df_final[~df_final["ipAddress"].isin(white_ip_set)].copy()
+            st.session_state["white_ips"] = df_white
             st.session_state["wireless_ips"] = df_wireless
-            st.session_state["cloud_ips"]    = df_cloud
-            st.session_state["cdn_ips"]      = df_cdn
-            st.session_state["bp_ips"]       = df_bp
-            st.session_state["grey_ips"]     = df_grey
-            st.session_state["wl_cnt"]       = wl_cnt
+            st.session_state["cloud_ips"] = df_cloud
+            st.session_state["cdn_ips"] = df_cdn
+            st.session_state["bp_ips"] = df_bp
+            st.session_state["grey_ips"] = df_grey
+            st.session_state["wl_cnt"] = wl_cnt
 
             st.success(f"Done! Total records in DB: {record_count():,}")
 
@@ -109,7 +109,7 @@ if "wireless_ips" in st.session_state:
     st.subheader(f"📡 Wireless IPs ({len(df_wl):,})")
     WIRELESS_COLS = [
         "ipAddress", "provider", "organisation", "asn", "type",
-        "proxy", "vpn", "anonymous", "tor", "operator_name"
+        "proxy", "vpn", "anonymous", "tor", "operator_name",
     ]
     st.dataframe(
         df_wl[[c for c in WIRELESS_COLS if c in df_wl.columns]],
@@ -119,7 +119,7 @@ if "wireless_ips" in st.session_state:
     st.divider()
 
 
-# ── HOSTING SUMMARY (link to detail page) ─────────────────────────────────────
+# ── HOSTING SUMMARY ───────────────────────────────────────────────────────────
 if "grey_ips" in st.session_state and not st.session_state["grey_ips"].empty:
     df_grey = st.session_state["grey_ips"]
 
@@ -129,15 +129,29 @@ if "grey_ips" in st.session_state and not st.session_state["grey_ips"].empty:
     with col2:
         st.page_link("pages/hosting.py", label="🔍 Clicken →")
 
-    dist = df_grey["grey_sub_tier"].value_counts().to_dict()
-    st.caption(
-        f"📊 Distribution → "
-        f"❓ unknown: {dist.get('unknown', 0):,}  |  "
-        f"🔴 high: {dist.get('grey_high', 0):,}  |  "
-        f"🟡 mid: {dist.get('grey_mid', 0):,}  |  "
-        f"🟢 low: {dist.get('grey_low', 0):,}    "
-        f"→ Open the Hosting detail page to see the full breakdown."
-    )
+    # Older versions of the pipeline supplied grey_sub_tier. The on-demand
+    # provider-research flow no longer requires this column, so keep displaying
+    # the dashboard when it is absent instead of raising KeyError.
+    if "grey_sub_tier" in df_grey.columns:
+        dist = df_grey["grey_sub_tier"].value_counts().to_dict()
+        st.caption(
+            "📊 Distribution → "
+            f"❓ unknown: {dist.get('unknown', 0):,}  |  "
+            f"🔴 high: {dist.get('grey_high', 0):,}  |  "
+            f"🟡 mid: {dist.get('grey_mid', 0):,}  |  "
+            f"🟢 low: {dist.get('grey_low', 0):,}    "
+            "→ Open the Hosting detail page to see the full breakdown."
+        )
+    else:
+        unique_asns = (
+            int(df_grey["asn_int"].nunique())
+            if "asn_int" in df_grey.columns
+            else (int(df_grey["asn"].nunique()) if "asn" in df_grey.columns else 0)
+        )
+        st.caption(
+            f"📊 {len(df_grey):,} Grey Hosting IPs across {unique_asns:,} ASNs. "
+            "Provider research runs on demand from the Hosting detail page."
+        )
     st.divider()
 
 

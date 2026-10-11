@@ -2,11 +2,11 @@
 cloud_check.py
 --------------
 Checks enriched IPs against:
-  1. Cloud Provider IP ranges    → cloud_ranges/*.txt
-  2. CDN Edge IP ranges          → cdn_ranges/*.txt
-  3. Bulletproof Hosting ASNs    → bulletproof_asns.txt
+  1. Cloud Provider IP ranges    -> cloud_ranges/*.txt
+  2. CDN Edge IP ranges          -> cdn_ranges/*.txt
+  3. Bulletproof Hosting ASNs    -> bulletproof_asns.txt
 Uses binary search (bisect) for fast O(log n) prefix lookups.
-No external dependencies — stdlib only.
+No external dependencies -- stdlib only.
 """
 
 import os
@@ -15,7 +15,7 @@ import ipaddress
 import pandas as pd
 
 CLOUD_RANGES_DIR = "cloud_ranges"
-CDN_RANGES_DIR   = "cdn_ranges"
+CDN_RANGES_DIR = "cdn_ranges"
 BULLETPROOF_FILE = "bulletproof_asns.txt"
 
 
@@ -34,7 +34,7 @@ def _load_ranges_from_dir(directory: str) -> tuple[list, list]:
 
         provider = filename.replace(".txt", "")
         filepath = os.path.join(directory, filename)
-        count    = 0
+        count = 0
 
         with open(filepath, "r") as f:
             for line in f:
@@ -80,9 +80,9 @@ def _load_bulletproof_asns() -> set[str]:
 
 
 # ── Load at import time ───────────────────────────────────────────────────────
-_CLOUD_NETWORKS,  _CLOUD_KEYS  = _load_ranges_from_dir(CLOUD_RANGES_DIR)
-_CDN_NETWORKS,    _CDN_KEYS    = _load_ranges_from_dir(CDN_RANGES_DIR)
-_BULLETPROOF_ASNS              = _load_bulletproof_asns()
+_CLOUD_NETWORKS, _CLOUD_KEYS = _load_ranges_from_dir(CLOUD_RANGES_DIR)
+_CDN_NETWORKS, _CDN_KEYS = _load_ranges_from_dir(CDN_RANGES_DIR)
+_BULLETPROOF_ASNS = _load_bulletproof_asns()
 
 
 # ── IP range lookup ───────────────────────────────────────────────────────────
@@ -109,22 +109,22 @@ def _build_rows(df: pd.DataFrame, networks: list, keys: list) -> pd.DataFrame:
         provider = _lookup(str(row.get("ipAddress", "")), networks, keys)
         if provider:
             rows.append({
-                "ipAddress":          row.get("ipAddress"),
-                "provider":           provider,
-                "asn":                row.get("asn"),
-                "hostname":           row.get("hostname"),
-                "organisation":       row.get("organisation"),
-                "city":               row.get("city"),
-                "type":               row.get("type"),
-                "proxy":              row.get("proxy"),
-                "vpn":                row.get("vpn"),
-                "tor":                row.get("tor"),
-                "hosting":            row.get("hosting"),
-                "compromised":        row.get("compromised"),
-                "scraper":            row.get("scraper"),
-                "anonymous":          row.get("anonymous"),
-                "operator_name":      row.get("operator_name"),
-                "operator_url":       row.get("operator_url"),
+                "ipAddress": row.get("ipAddress"),
+                "provider": provider,
+                "asn": row.get("asn"),
+                "hostname": row.get("hostname"),
+                "organisation": row.get("organisation"),
+                "city": row.get("city"),
+                "type": row.get("type"),
+                "proxy": row.get("proxy"),
+                "vpn": row.get("vpn"),
+                "tor": row.get("tor"),
+                "hosting": row.get("hosting"),
+                "compromised": row.get("compromised"),
+                "scraper": row.get("scraper"),
+                "anonymous": row.get("anonymous"),
+                "operator_name": row.get("operator_name"),
+                "operator_url": row.get("operator_url"),
                 "operator_anonymity": row.get("operator_anonymity"),
             })
 
@@ -158,9 +158,9 @@ def check_bulletproof(df: pd.DataFrame) -> pd.DataFrame:
     if df_match.empty:
         return pd.DataFrame()
 
-    COLS = [
+    cols = [
         "ipAddress", "provider", "asn", "hostname", "organisation", "city", "type",
         "proxy", "vpn", "tor", "operator_name", "operator_url", "operator_anonymity",
     ]
 
-    return df_match[[c for c in COLS if c in df_match.columns]].copy()
+    return df_match[[c for c in cols if c in df_match.columns]].copy()
