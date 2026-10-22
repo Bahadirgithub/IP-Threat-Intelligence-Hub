@@ -1,7 +1,7 @@
-"""ASN/hosting-provider research workflow.
+"""ASN/hosting-provider research workflow with focused source lookups.
 
-Each research node adds one grouped field containing raw source responses.
-Risk interpretation is left to the single Gemini evaluation node.
+The workflow retains source-backed findings and compacts repetitive registry data
+when collecting it. Risk interpretation is left to the single Gemini evaluation node.
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ print(f"[config] .env found={ENV_FILE.is_file()}")
 
 # Shared workflow state: inputs, raw source groups, and the final model result.
 class ASNState(TypedDict):
-    """Minimal state: query inputs, one raw-data group per node, final verdict."""
+    """Minimal state: inputs, grouped source findings, and final verdict."""
 
     asn: str
     abused_ip: NotRequired[Optional[str]]
@@ -154,9 +154,10 @@ def _rdap_raw(asn: str) -> dict[str, Any]:
 
 @lru_cache(maxsize=2)
 def _iana_ip_rdap_bootstrap(version: int) -> dict[str, Any]:
-    """Load the IANA RDAP bootstrap for IPv4 or IPv6."""
-    family = "ipv4" if version == 4 else "ipv6"
-    url = f"https://data.iana.org/rdap/{family}.json"
+    """Cache IANA's authoritative RDAP bootstrap for IPv4 or IPv6."""
+    if version not in (4, 6):
+        raise ValueError(f"Unsupported IP version: {version}")
+    url = f"https://data.iana.org/rdap/ipv{version}.json"
     response = requests.get(
         url,
         timeout=HTTP_TIMEOUT,
@@ -167,46 +168,154 @@ def _iana_ip_rdap_bootstrap(version: int) -> dict[str, Any]:
 
 
 def _rdap_ip_raw(ip_value: str) -> dict[str, Any]:
-    """Find the authoritative RDAP service for an IP and return its IP record."""
-    address = ipaddress.ip_address(ip_value)
-    family = "ipv4" if address.version == 4 else "ipv6"
-    bootstrap_source = f"https://data.iana.org/rdap/{family}.json"
+    """Query the authoritative RDAP service for one IP, using IANA bootstrap."""
     try:
+        address = ipaddress.ip_address(ip_value)
+        bootstrap_source = f"https://data.iana.org/rdap/ipv{address.version}.json"
         bootstrap = _iana_ip_rdap_bootstrap(address.version)
         matches: list[tuple[int, str]] = []
-        for service in bootstrap.get("services", []):
+        for service in _as_list(bootstrap.get("services")):
             if not isinstance(service, list) or len(service) != 2:
                 continue
             prefixes, base_urls = service
-            if not base_urls:
+            if not isinstance(prefixes, list) or not isinstance(base_urls, list) or not base_urls:
                 continue
             for prefix in prefixes:
                 try:
                     network = ipaddress.ip_network(str(prefix), strict=False)
-                    if network.version == address.version and address in network:
-                        matches.append((network.prefixlen, str(base_urls[0]).rstrip("/")))
                 except ValueError:
                     continue
+                if address.version == network.version and address in network:
+                    matches.append((network.prefixlen, str(base_urls[0]).rstrip("/")))
         if not matches:
             return {
                 "iana_bootstrap_source": bootstrap_source,
                 "rdap_ip_record": {"request_error": f"No RDAP service found for {address}"},
             }
-        base_url = max(matches, key=lambda item: item[0])[1]
+        # Prefer the most-specific matching bootstrap prefix.
+        _, base_url = max(matches, key=lambda item: item[0])
         record = _request_json(
             f"{base_url}/ip/{address}",
-            headers={
-                "Accept": "application/rdap+json, application/json",
-                "User-Agent": USER_AGENT,
-            },
+            headers={"Accept": "application/rdap+json, application/json", "User-Agent": USER_AGENT},
         )
-        return {
-            "iana_bootstrap_source": bootstrap_source,
-            "rdap_base_url": base_url,
-            "rdap_ip_record": record,
-        }
+        return {"iana_bootstrap_source": bootstrap_source, "rdap_ip_record": record}
     except Exception as exc:
-        return {"iana_bootstrap_source": bootstrap_source, "request_error": str(exc)}
+        return {
+            "iana_bootstrap_source": None,
+            "rdap_ip_record": {"request_error": str(exc)},
+        }
+
+
+def _compact_ip_rdap(wrapper: dict[str, Any]) -> dict[str, Any]:
+    """Keep useful RDAP IP-registration fields, excluding bulky links and DNS delegation data."""
+    wrapper = _as_dict(wrapper)
+    raw = _as_dict(wrapper.get("rdap_ip_record"))
+    response = _as_dict(raw.get("response"))
+    result: dict[str, Any] = {}
+    if wrapper.get("iana_bootstrap_source"):
+        result["iana_bootstrap_source"] = wrapper["iana_bootstrap_source"]
+    record_summary: dict[str, Any] = {}
+    for key in ("source", "http_status", "request_error"):
+        if raw.get(key) is not None:
+            record_summary[key] = raw[key]
+
+    for key in (
+            "objectClassName", "handle", "name", "startAddress", "endAddress",
+            "ipVersion", "type", "country", "parentHandle", "status", "cidr0_cidrs",
+    ):
+        if response.get(key) not in (None, [], ""):
+            record_summary[key] = response[key]
+
+    events = []
+    for event in _as_list(response.get("events")):
+        event = _as_dict(event)
+        action = str(event.get("eventAction", "")).lower()
+        if action in {"registration", "last changed", "last update of rdap database"}:
+            item = {
+                key: event[key]
+                for key in ("eventAction", "eventDate")
+                if event.get(key) is not None
+            }
+            if item:
+                events.append(item)
+    if events:
+        record_summary["events"] = events
+
+    # Extract registration organization and only relevant public abuse contacts.
+    entities_out: list[dict[str, Any]] = []
+    seen_entities: set[tuple[str, str, tuple[str, ...]]] = set()
+
+    def collect_entity(entity_value: Any, depth: int = 0) -> None:
+        if depth > 2:
+            return
+        entity = _as_dict(entity_value)
+        roles = [str(role) for role in _as_list(entity.get("roles"))]
+        vcard = _as_list(entity.get("vcardArray"))
+        properties = _as_list(vcard[1]) if len(vcard) > 1 else []
+        name: Optional[str] = None
+        organization: Optional[str] = None
+        abuse_emails: list[str] = []
+        for prop in properties:
+            if not isinstance(prop, list) or len(prop) < 4:
+                continue
+            prop_name = str(prop[0]).lower()
+            params = _as_dict(prop[1])
+            value = prop[3]
+            if prop_name == "fn" and isinstance(value, str) and not name:
+                name = value
+            elif prop_name == "org":
+                if isinstance(value, list):
+                    value = " ".join(str(part) for part in value if part)
+                if isinstance(value, str) and value.strip() and not organization:
+                    organization = value.strip()
+            elif prop_name == "email" and isinstance(value, str):
+                types = params.get("type", [])
+                if isinstance(types, str):
+                    types = [types]
+                if "abuse" in [str(item).lower() for item in types] or "abuse" in [role.lower() for role in roles]:
+                    abuse_emails.append(value.strip())
+
+        is_abuse_contact = "abuse" in [role.lower() for role in roles] or bool(abuse_emails)
+        is_registration_entity = any(
+            role.lower() in {"registrant", "registration", "technical", "administrative", "registrar"}
+            for role in roles
+        )
+        out: dict[str, Any] = {}
+        if roles:
+            out["roles"] = roles
+        if organization:
+            out["organization"] = organization[:200]
+        if name and (is_abuse_contact or not organization):
+            out["name"] = name[:200]
+        if abuse_emails:
+            out["abuse_emails"] = sorted(set(email for email in abuse_emails if email))
+        if out and (is_abuse_contact or is_registration_entity):
+            key = (
+                str(out.get("organization") or ""),
+                str(out.get("name") or ""),
+                tuple(out.get("roles") or []),
+            )
+            if key not in seen_entities:
+                seen_entities.add(key)
+                entities_out.append(out)
+        for child in _as_list(entity.get("entities")):
+            collect_entity(child, depth + 1)
+
+    for entity in _as_list(response.get("entities")):
+        collect_entity(entity)
+    if entities_out:
+        record_summary["entities"] = entities_out
+    if response.get("errorCode") is not None:
+        record_summary["source_error_code"] = response["errorCode"]
+    if response.get("title"):
+        record_summary["source_error_title"] = response["title"]
+    if response.get("description"):
+        description = response["description"]
+        record_summary["source_error_description"] = str(description)[:500]
+
+    if record_summary:
+        result["rdap_ip_record"] = record_summary
+    return result
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -229,33 +338,27 @@ def _response_data(source_result: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def setup_node(state: ASNState) -> dict[str, Any]:
-    """Fetch complete BGPView, RIPE WHOIS and RDAP responses into one field."""
+    """Fetch RIPE WHOIS and RDAP ASN records; avoid a duplicate BGPView lookup."""
     asn = _asn_num(state["asn"])
     identity = {
-        "bgpview": _request_json(f"https://api.bgpview.io/asn/{asn}"),
         "ripe_whois": _ripe_raw("whois", resource=f"AS{asn}"),
         "rdap": _rdap_raw(asn),
     }
-    print(f"[setup] AS{asn}: collected BGPView, RIPE WHOIS and RDAP responses")
+    print(f"[setup] AS{asn}: collected RIPE WHOIS and RDAP ASN records")
     return {"identity": identity}
 
 
 def _dns_response(query_name: str, record_type: str, timeout: int = 5) -> dict[str, Any]:
-    """Return raw DNS answers or the resolver error for a query."""
+    """Return DNS answers or the resolver error without verbose wire-message text."""
     try:
         answer = dns.resolver.resolve(query_name, record_type, lifetime=timeout)
-        result: dict[str, Any] = {"answers": [record.to_text() for record in answer]}
-        try:
-            result["dns_message"] = answer.response.to_text()
-        except Exception:
-            pass
-        return result
+        return {"answers": [record.to_text() for record in answer]}
     except Exception as exc:
         return {"resolver_error_type": type(exc).__name__, "resolver_error": str(exc)}
 
 
 def _dns_raw_lookup(name: str, record_type: str) -> dict[str, Any]:
-    """Return DNS answers/response text or the resolver error, not a risk boolean."""
+    """Return DNS answers or the resolver error, not a risk boolean."""
     return {
         "query_name": name,
         "record_type": record_type,
@@ -290,30 +393,95 @@ def abuse_mailbox_node(state: ASNState) -> dict[str, Any]:
 # --- Routing, target-IP DNS, RPKI, and registration data ---------------------
 
 
-def _announced_prefixes(raw_result: dict[str, Any]) -> list[str]:
-    rows = _response_data(raw_result).get("prefixes", [])
-    if not isinstance(rows, list):
-        return []
-    return [
-        str(row["prefix"])
-        for row in rows
-        if isinstance(row, dict) and row.get("prefix")
-    ]
-
-
-def _target_prefix(prefixes: list[str], ip_value: str) -> Optional[str]:
-    ip_obj = ipaddress.ip_address(ip_value)
-    matches = []
-    for prefix in prefixes:
-        try:
-            network = ipaddress.ip_network(prefix, strict=False)
-            if network.version == ip_obj.version and ip_obj in network:
-                matches.append(network)
-        except ValueError:
+def _network_info_fields(raw_result: dict[str, Any]) -> tuple[Optional[str], list[dict[str, str]]]:
+    """Extract the routed prefix and origin ASNs for one target IP."""
+    data = _response_data(raw_result)
+    prefix = data.get("prefix")
+    prefix_text = str(prefix).strip() if prefix else None
+    origins: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in _as_list(data.get("asns")):
+        if isinstance(item, dict):
+            raw_number = item.get("asn") or item.get("number") or item.get("resource")
+            holder = item.get("holder") or item.get("name")
+        else:
+            raw_number = item
+            holder = None
+        text_number = str(raw_number or "").strip().upper()
+        if text_number.startswith("AS"):
+            text_number = text_number[2:]
+        if not text_number.isdigit() or text_number in seen:
             continue
-    if not matches:
-        return None
-    return str(max(matches, key=lambda network: network.prefixlen))
+        seen.add(text_number)
+        origin = {"asn": text_number}
+        if holder:
+            origin["holder"] = str(holder)
+        origins.append(origin)
+    return prefix_text, origins
+
+
+def _compact_network_info(raw_result: dict[str, Any]) -> dict[str, Any]:
+    """Keep only route prefix, announcing ASNs and request status."""
+    response = _as_dict(_as_dict(raw_result).get("response"))
+    prefix, origins = _network_info_fields(raw_result)
+    data = _response_data(raw_result)
+    result: dict[str, Any] = {}
+    for key in ("source", "http_status", "request_error"):
+        if _as_dict(raw_result).get(key) is not None:
+            result[key] = _as_dict(raw_result)[key]
+    if response.get("status") is not None:
+        result["source_status"] = response["status"]
+    if data.get("resource") is not None:
+        result["resource"] = data["resource"]
+    result["prefix"] = prefix
+    result["origin_asns"] = origins
+    if response.get("messages"):
+        result["messages"] = response["messages"]
+    return result
+
+
+def _compact_prefix_count(raw_result: dict[str, Any]) -> dict[str, Any]:
+    """Keep short IPv4/IPv6 prefix-count timelines instead of full API metadata."""
+    raw_result = _as_dict(raw_result)
+    response = _as_dict(raw_result.get("response"))
+    data = _as_dict(response.get("data"))
+    result: dict[str, Any] = {}
+    for key in ("source", "http_status", "request_error"):
+        if raw_result.get(key) is not None:
+            result[key] = raw_result[key]
+    for key in ("status", "status_code"):
+        if response.get(key) is not None:
+            result[f"source_{key}"] = response[key]
+    for key in ("resource", "query_starttime", "query_endtime", "resolution"):
+        if data.get(key) is not None:
+            result[key] = data[key]
+    for family in ("ipv4", "ipv6"):
+        series = data.get(family)
+        if isinstance(series, list):
+            result[family] = [
+                {
+                    key: point[key]
+                    for key in ("timestamp", "prefixes", "address-space", "address_space")
+                    if isinstance(point, dict) and point.get(key) is not None
+                }
+                for point in series
+                if isinstance(point, dict)
+            ]
+        elif isinstance(series, dict):
+            # Accommodate API representations that wrap the points in a child field.
+            points = series.get("values") or series.get("data") or []
+            result[family] = [
+                {
+                    key: point[key]
+                    for key in ("timestamp", "prefixes", "address-space", "address_space")
+                    if isinstance(point, dict) and point.get(key) is not None
+                }
+                for point in points
+                if isinstance(point, dict)
+            ]
+    if response.get("messages"):
+        result["messages"] = response["messages"]
+    return result
 
 
 def _ptr_raw_lookup(ip_value: str) -> dict[str, Any]:
@@ -380,14 +548,13 @@ def asn_metadata_node(state: ASNState) -> dict[str, Any]:
     thirty_days_ago = now - timedelta(days=30)
 
     routing = _ripe_raw("routing-status", resource=f"AS{asn}")
-    announced = _ripe_raw("announced-prefixes", resource=f"AS{asn}")
-    announced_30d = _ripe_raw(
-        "announced-prefixes",
+    prefix_count_30d = _compact_prefix_count(_ripe_raw(
+        "prefix-count",
         resource=f"AS{asn}",
         starttime=int(thirty_days_ago.timestamp()),
         endtime=int(now.timestamp()),
-    )
-    prefixes = _announced_prefixes(announced)
+        resolution="2d",
+    ))
 
     raw_target_ip = state.get("abused_ip")
     canonical_ip: Optional[str] = None
@@ -398,7 +565,15 @@ def asn_metadata_node(state: ASNState) -> dict[str, Any]:
         except ValueError as exc:
             target_ip_error = str(exc)
 
-    target_prefix = _target_prefix(prefixes, canonical_ip) if canonical_ip else None
+    target_network_info_raw: dict[str, Any] = {}
+    target_network_info: dict[str, Any] = {}
+    target_prefix: Optional[str] = None
+    origin_asns: list[dict[str, str]] = []
+    if canonical_ip:
+        target_network_info_raw = _ripe_raw("network-info", resource=canonical_ip)
+        target_prefix, origin_asns = _network_info_fields(target_network_info_raw)
+        target_network_info = _compact_network_info(target_network_info_raw)
+
     if not raw_target_ip:
         target_prefix_rpki = {
             "prefix_lookup": "No abused IP was supplied; no unrelated prefix was checked."
@@ -408,22 +583,44 @@ def asn_metadata_node(state: ASNState) -> dict[str, Any]:
             "abused_ip": str(raw_target_ip),
             "prefix_lookup_error": target_ip_error,
         }
-    elif target_prefix:
+    elif target_prefix and origin_asns:
+        validations = []
+        for origin in origin_asns:
+            validation = _ripe_raw(
+                "rpki-validation",
+                resource=origin["asn"],
+                prefix=target_prefix,
+            )
+            validation_data = _response_data(validation)
+            validations.append({
+                "origin_asn": origin["asn"],
+                "origin_holder": origin.get("holder"),
+                "response": {
+                    key: validation_data[key]
+                    for key in (
+                        "status", "validating_roas", "invalidated_roas",
+                        "resource", "prefix", "max_length", "origin",
+                    )
+                    if validation_data.get(key) is not None
+                },
+                **{
+                    key: validation[key]
+                    for key in ("source", "http_status", "request_error")
+                    if validation.get(key) is not None
+                },
+            })
         target_prefix_rpki = {
             "abused_ip": canonical_ip,
             "prefix": target_prefix,
-            "ripe_rpki_validation": _ripe_raw(
-                "rpki-validation",
-                resource=asn,
-                prefix=target_prefix,
-            ),
+            "observed_origin_asns": origin_asns,
+            "validations": validations,
         }
     else:
         target_prefix_rpki = {
             "abused_ip": canonical_ip,
-            "prefix_lookup": (
-                "No prefix in the existing announced-prefixes response contains this IP."
-            ),
+            "prefix": target_prefix,
+            "observed_origin_asns": origin_asns,
+            "prefix_lookup": "RIPE network-info did not return both a routed prefix and origin ASN; RPKI was not queried.",
         }
 
     target_ip_dns: dict[str, Any] = {}
@@ -436,8 +633,12 @@ def asn_metadata_node(state: ASNState) -> dict[str, Any]:
             "fcrdns_forward_lookups": _fcrdns_forward_lookups(ptr_result),
         }
         target_ip_registration = {
-            "ripe_stat_whois": _ripe_raw("whois", resource=canonical_ip),
-            "rdap": _rdap_ip_raw(canonical_ip),
+            # Keep both registry perspectives, but compact the RDAP response
+            # immediately so bulky links/delegation data are not stored or sent to Gemini.
+            "ripe_stat_whois": _compact_target_whois(
+                _ripe_raw("whois", resource=canonical_ip)
+            ),
+            "rdap": _compact_ip_rdap(_rdap_ip_raw(canonical_ip)),
         }
     elif raw_target_ip:
         target_ip_dns = {"target_ip": str(raw_target_ip), "lookup_error": target_ip_error}
@@ -448,8 +649,8 @@ def asn_metadata_node(state: ASNState) -> dict[str, Any]:
 
     network_data = {
         "ripe_routing_status": routing,
-        "ripe_announced_prefixes_current": announced,
-        "ripe_announced_prefixes_last_30_days": announced_30d,
+        "ripe_prefix_count_last_30_days": prefix_count_30d,
+        "target_ip_network_info": target_network_info,
         "abused_ip_prefix": {
             "abused_ip": canonical_ip or raw_target_ip,
             "prefix": target_prefix,
@@ -459,8 +660,8 @@ def asn_metadata_node(state: ASNState) -> dict[str, Any]:
         "target_ip_registration": target_ip_registration,
     }
     print(
-        f"[metadata] AS{asn}: collected routing, target RPKI, "
-        "target-IP PTR/FCrDNS, WHOIS and RDAP data"
+        f"[metadata] AS{asn}: collected routing summary, 30-day prefix-count trend, "
+        "target route/RPKI, target-IP PTR/FCrDNS and one IP-registration lookup"
     )
     return {"network": network_data}
 
@@ -483,16 +684,13 @@ def _normalize_website_url(value: Any) -> Optional[str]:
 
 
 def _website_candidates(identity: dict[str, Any], abuse: dict[str, Any]) -> list[dict[str, str]]:
-    """Find homepage URLs from ASN records, using the abuse domain only as fallback."""
+    """Find homepage URLs from RIPE WHOIS/RDAP, using abuse domain only as fallback."""
     candidates: list[dict[str, str]] = []
 
     def add(value: Any, source: str) -> None:
         url = _normalize_website_url(value)
         if url and all(item["url"] != url for item in candidates):
             candidates.append({"url": url, "source": source})
-
-    bgp_data = _response_data(identity.get("bgpview", {}))
-    add(bgp_data.get("website"), "BGPView data.website")
 
     whois_data = _response_data(identity.get("ripe_whois", {}))
     for record in _as_list(whois_data.get("records")):
@@ -564,6 +762,9 @@ def crypto_check_node(state: ASNState) -> dict[str, Any]:
     for candidate in candidates:
         if _is_public_web_url(candidate["url"]):
             public_candidates.append(candidate)
+            # Only one homepage is passed to URL Context, so stop checking URLs
+            # once we have the first public candidate.
+            break
         else:
             skipped_candidates.append({
                 **candidate,
@@ -588,8 +789,9 @@ def crypto_check_node(state: ASNState) -> dict[str, Any]:
 
 SYSTEM_PROMPT = """\
 You are analyzing an ASN, its target IP address, and the associated hosting provider.
-The input contains raw source data collected from BGPView, RIPE Stat, RDAP, DNS,
-routing/RPKI lookups, and a provider homepage URL.
+The input contains source data collected from RIPE Stat, RDAP, DNS, routing/RPKI
+lookups, and a provider homepage URL. IP registration and prefix-count history are
+compact summaries that preserve relevant fields and time windows.
 
 Review all supplied data groups and source responses before producing the assessment.
 Provide an overall assessment, negative/risk factors, positive factors, the target-prefix
@@ -721,8 +923,61 @@ def _failed_verdict(error: str, summary: str) -> dict[str, Any]:
     }
 
 
+def _compact_source_metadata(source_result: dict[str, Any]) -> dict[str, Any]:
+    """Keep source URL and transport/API errors while dropping verbose API metadata."""
+    source_result = _as_dict(source_result)
+    result: dict[str, Any] = {}
+    for key in ("source", "http_status", "request_error"):
+        if source_result.get(key) is not None:
+            result[key] = source_result[key]
+    response = _as_dict(source_result.get("response"))
+    if response.get("status") is not None:
+        result["source_status"] = response["status"]
+    if response.get("status_code") is not None:
+        result["source_status_code"] = response["status_code"]
+    return result
+
+
+def _compact_target_whois(source_result: dict[str, Any]) -> dict[str, Any]:
+    """Keep useful IP registration fields and drop repetitive reverse-DNS records."""
+    result = _compact_source_metadata(source_result)
+    response = _as_dict(_as_dict(source_result).get("response"))
+    data = _as_dict(response.get("data"))
+    wanted_keys = {
+        "inetnum", "inet6num", "netrange", "netname", "route", "route6",
+        "origin", "aut-num", "as-name", "org", "org-name", "org-type",
+        "organisation", "descr", "owner", "ownerid", "responsible", "country",
+        "address", "status", "created", "last-modified", "abuse-c",
+        "abuse-mailbox", "abuse-contact", "e-mail", "email", "nic-hdl",
+        "person", "role", "source", "remarks", "mnt-by",
+    }
+    fields: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for record in _as_list(data.get("records")):
+        for item in _as_list(record):
+            item = _as_dict(item)
+            key = str(item.get("key", "")).strip().lower()
+            value = item.get("value")
+            if key not in wanted_keys or value is None:
+                continue
+            value_text = str(value).strip()
+            if not value_text:
+                continue
+            if len(value_text) > 400:
+                value_text = value_text[:397] + "..."
+            pair = (key, value_text)
+            if pair in seen:
+                continue
+            seen.add(pair)
+            fields.append({"key": key, "value": value_text})
+    result["resource"] = data.get("resource")
+    result["query_time"] = data.get("query_time")
+    result["registration_fields"] = fields
+    return result
+
+
 def llm_evaluate_node(state: ASNState) -> dict[str, Any]:
-    """Send the raw grouped source results in one user message to Gemini."""
+    """Send grouped source findings to Gemini after collection-time compaction."""
     if not GEMINI_API_KEY:
         return {
             "verdict": _failed_verdict(
@@ -739,6 +994,8 @@ def llm_evaluate_node(state: ASNState) -> dict[str, Any]:
         "network": state.get("network", {}),
         "website": state.get("website", {}),
     }
+    compact_payload_json = json.dumps(payload, indent=2, ensure_ascii=False)
+    print(f"[llm] source payload prepared at collection time: {len(compact_payload_json):,} characters")
     website_data = payload.get("website", {})
     homepage_url = website_data.get("homepage_url") if isinstance(website_data, dict) else None
     homepage_instruction = (
@@ -749,13 +1006,13 @@ def llm_evaluate_node(state: ASNState) -> dict[str, Any]:
     )
     user_message = (
             homepage_instruction
-            + "Analyze these raw ASN/provider source responses:\n\n"
-            + json.dumps(payload, indent=2, ensure_ascii=False)
+            + "Analyze these ASN/provider source responses and compacted registration/prefix summaries:\n\n"
+            + compact_payload_json
     )
     request_body = {
         "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": [{"role": "user", "parts": [{"text": user_message}]}],
-        "tools": [{"url_context": {}}],
+        "tools": [{"url_context": {}}, {"google_search": {}}],
         "generationConfig": {
             "maxOutputTokens": 4096,
             "responseMimeType": "application/json",
@@ -858,6 +1115,8 @@ def research_asn(asn: str, abused_ip: Optional[str] = None) -> dict[str, Any]:
         f"(score: {verdict.get('risk_score', '?')})"
     )
     return result
+
+
 
 
 

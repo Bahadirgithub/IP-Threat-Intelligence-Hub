@@ -27,14 +27,6 @@ st.set_page_config(page_title="ThreatWatch", layout="wide", page_icon="🛡️")
 st.title("🛡️ ThreatWatch — Security Dashboard")
 
 
-def highlight_corrected_type(data):
-    """Highlights 'type' cell orange if corrected by ipapi.is."""
-    styles = pd.DataFrame("", index=data.index, columns=data.columns)
-    if "_api_corrected" in data.columns:
-        mask = data["_api_corrected"] == True
-        styles.loc[mask, "type"] = "background-color: #FFA500; color: white; font-weight: bold;"
-    return styles
-
 
 if st.button("Fetch & Process Data"):
     with st.spinner("Running pipeline: AbuseIPDB → ProxyCheck → Whitelist → ip-api → Cloud → CDN → Bulletproof → Grey → Anonymization..."):
@@ -105,12 +97,15 @@ if "all_ips" in st.session_state:
     main_cols = [c for c in st.session_state["all_ips"].columns if c not in EXCLUDE_COLS]
 
     st.dataframe(
-        st.session_state["all_ips"].style.apply(highlight_corrected_type, axis=None),
+        st.session_state["all_ips"],
         column_order=main_cols,
         use_container_width=True,
         hide_index=True,
     )
-    st.divider()
+    st.markdown(
+        '<hr style="border:none; border-top:2px solid #e74c3c; margin:6px 0 18px 0;">',
+        unsafe_allow_html=True,
+    )
 
 
 # ── WIRELESS TABLE ────────────────────────────────────────────────────────────

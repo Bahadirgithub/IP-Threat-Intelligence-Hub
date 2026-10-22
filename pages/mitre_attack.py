@@ -28,6 +28,7 @@ st.markdown("""
 }
 .banner-ra { background: linear-gradient(135deg,#c0392b,#e74c3c); }
 .banner-cc { background: linear-gradient(135deg,#1a237e,#283593); }
+.banner-rc { background: linear-gradient(135deg,#1b5e20,#2e7d32); }
 .banner-title {
     color: white;
     font-size: 17px;
@@ -109,6 +110,10 @@ st.markdown("""
 }
 .sh-acquire    { background:#fde8e8; color:#c0392b; border:1px solid #f1b0ab; }
 .sh-compromise { background:#fef3e2; color:#a04000; border:1px solid #f0c080; }
+.sh-recon      { background:#e8f5e9; color:#1b5e20; border:1px solid #a5d6a7; }
+.tc-rc { border-color:#2e7d32; background:rgba(46,125,50,.06); }
+.tid-rc { background:#e8f5e9; color:#1b5e20; border:1px solid #a5d6a7; }
+.cp-rc { background:#2e7d32; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -144,29 +149,42 @@ def card(tid: str, name: str, desc: str, source: str,
 </div>"""
 
 
-# ── Live counts from session ───────────────────────────────────────────────────
-all_ips  = _get("all_ips")
-grey_ips = _get("grey_ips")
-bp_ips   = _get("bp_ips")
-cdn_ips  = _get("cdn_ips")
+def _hosting_ips(df: pd.DataFrame) -> pd.DataFrame:
+    """Return only Hosting/Host rows from the existing grey-hosting set."""
+    if df.empty or "type" not in df.columns:
+        return df.iloc[0:0].copy()
+    types = df["type"].fillna("").astype(str).str.strip().str.lower()
+    return df.loc[types.isin({"host", "hosting"})].copy()
 
-has_data = any(
-    not _get(k).empty
-    for k in ["all_ips", "grey_ips", "bp_ips", "cdn_ips"]
-)
+
+def _true_mask(series: pd.Series) -> pd.Series:
+    """Handle boolean values and string representations such as 'True' safely."""
+    if pd.api.types.is_bool_dtype(series):
+        return series.fillna(False)
+    return series.fillna("").astype(str).str.strip().str.lower().isin({"true", "1", "yes"})
+
+
+# ── Live counts from session ───────────────────────────────────────────────────
+all_ips = _get("all_ips")
+grey_ips = _get("grey_ips")
+grey_hosting_ips = _hosting_ips(grey_ips)
+
+has_data = not all_ips.empty or not grey_ips.empty
+
+compromised_grey_hosting_count = 0
+if not grey_hosting_ips.empty and "compromised" in grey_hosting_ips.columns:
+    compromised_grey_hosting_count = int(
+        _true_mask(grey_hosting_ips["compromised"]).sum()
+    )
 
 cnt = {
     # TA0042 — Acquire Infrastructure
-    "T1583.003": len(grey_ips)              if not grey_ips.empty else 0,
-    "T1583.005": _safe_count(all_ips, "compromised"),
-    "T1583.006": len(bp_ips)               if not bp_ips.empty   else 0,
+    "T1583.003": len(grey_hosting_ips),
     # TA0042 — Compromise Infrastructure
-    "T1584.003": len(grey_ips)              if not grey_ips.empty else 0,
-    "T1584.004": len(bp_ips)               if not bp_ips.empty   else 0,
-    "T1584.005": _safe_count(all_ips, "compromised"),
-    # TA0011
-    "T1090.003": _safe_count(all_ips, "tor"),
-    "T1090.004": _safe_count(cdn_ips, "proxy"),
+    "T1584.003": compromised_grey_hosting_count,
+    # TA0043 — Reconnaissance (kept as before)
+    "T1595.001": _safe_count(all_ips, "scraper"),
+    "T1595.002": _safe_count(all_ips, "scraper"),
 }
 
 
@@ -206,100 +224,66 @@ st.markdown(
     '<span class="sub-header sh-acquire">⬆ T1583 — Acquire Infrastructure</span>',
     unsafe_allow_html=True,
 )
-
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.markdown(card(
-        "T1583.003", "Virtual Private Server",
-        "Adversary rents a VPS to stage attacks or host C2. "
-        "Grey hosting IPs map to this technique.",
-        "Grey Hosting IPs",
-        cnt["T1583.003"], "tc-ra", "tid-ra", "cp-ra",
-    ), unsafe_allow_html=True)
-with c2:
-    st.markdown(card(
-        "T1583.005", "Botnet",
-        "Adversary acquires botnet infrastructure for attacks. "
-        "IPs with compromised=True are indicators.",
-        "compromised flag",
-        cnt["T1583.005"], "tc-ra", "tid-ra", "cp-ra",
-    ), unsafe_allow_html=True)
-with c3:
-    st.markdown(card(
-        "T1583.006", "Web Services",
-        "Adversary acquires web services (bulletproof hosts) to evade attribution. "
-        "Maps to bulletproof hosting IPs.",
-        "Bulletproof Hosting IPs",
-        cnt["T1583.006"], "tc-ra", "tid-ra", "cp-ra",
-    ), unsafe_allow_html=True)
+st.markdown(card(
+    "T1583.003", "Virtual Private Server",
+    "Hosting IPs in the grey-hosting dataset are counted under this technique.",
+    "Grey Hosting IPs with type=Hosting",
+    cnt["T1583.003"], "tc-ra", "tid-ra", "cp-ra",
+), unsafe_allow_html=True)
 
 # ── T1584 Compromise Infrastructure ───────────────────────────────────────────
 st.markdown(
     '<span class="sub-header sh-compromise">⚠ T1584 — Compromise Infrastructure</span>',
     unsafe_allow_html=True,
 )
-
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.markdown(card(
-        "T1584.003", "Virtual Private Server",
-        "Adversary compromises third-party VPS. "
-        "Grey hosting IPs with unknown ownership map here.",
-        "Grey Hosting IPs",
-        cnt["T1584.003"], "tc-ra", "tid-ra", "cp-ra",
-    ), unsafe_allow_html=True)
-with c2:
-    st.markdown(card(
-        "T1584.004", "Server",
-        "Adversary compromises physical or virtual servers. "
-        "Bulletproof hosting IPs are strong indicators.",
-        "Bulletproof Hosting IPs",
-        cnt["T1584.004"], "tc-ra", "tid-ra", "cp-ra",
-    ), unsafe_allow_html=True)
-with c3:
-    st.markdown(card(
-        "T1584.005", "Botnet",
-        "Adversary compromises third-party systems to form a botnet. "
-        "IPs with compromised=True overlap here.",
-        "compromised flag",
-        cnt["T1584.005"], "tc-ra", "tid-ra", "cp-ra",
-    ), unsafe_allow_html=True)
+st.markdown(card(
+    "T1584.003", "Virtual Private Server",
+    "Grey-hosting Hosting IPs are counted here only when compromised=True.",
+    "Grey Hosting IPs with type=Hosting and compromised=True",
+    cnt["T1584.003"], "tc-ra", "tid-ra", "cp-ra",
+), unsafe_allow_html=True)
 
 st.divider()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TA0011 — Command and Control
+# TA0043 — Reconnaissance
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
-<div class="tactic-banner banner-cc">
+<div class="tactic-banner banner-rc">
   <div>
-    <p class="banner-title">📡 TA0011 — Command and Control</p>
+    <p class="banner-title">🔍 TA0043 — Reconnaissance</p>
     <p class="banner-sub">
-      Adversaries communicate with compromised systems using covert channels.
+      Adversary collects information to plan future operations — scanning, probing, fingerprinting.
     </p>
   </div>
 </div>
 """, unsafe_allow_html=True)
 
+# ── T1595 Active Scanning ──────────────────────────────────────────────────────
+st.markdown(
+    '<span class="sub-header sh-recon">🔎 T1595 — Active Scanning</span>',
+    unsafe_allow_html=True,
+)
+
 c1, c2, c3 = st.columns(3)
 
 with c1:
     st.markdown(card(
-        "T1090.003", "Multi-hop Proxy",
-        "Traffic bounced through multiple nodes (e.g. Tor) to obscure true origin. "
-        "IPs with tor=True map here.",
-        "tor flag",
-        cnt["T1090.003"], "tc-cc", "tid-cc", "cp-cc",
+        "T1595.001", "Scanning IP Blocks",
+        "Adversary scans IP ranges to identify live hosts and open ports. "
+        "Scraper IPs and port-scan flagged IPs map here.",
+        "scraper flag",
+        cnt["T1595.001"], "tc-rc", "tid-rc", "cp-rc",
     ), unsafe_allow_html=True)
 
 with c2:
     st.markdown(card(
-        "T1090.004", "Domain Fronting",
-        "CDN infrastructure used to disguise C2 traffic as legitimate HTTPS. "
-        "CDN IPs with proxy=True are indicators.",
-        "CDN + proxy flag",
-        cnt["T1090.004"], "tc-cc", "tid-cc", "cp-cc",
+        "T1595.002", "Vulnerability Scanning",
+        "Adversary scans for known vulnerabilities in exposed services. "
+        "Often precedes CVE exploitation — links to KEV database.",
+        "scraper flag",
+        cnt["T1595.002"], "tc-rc", "tid-rc", "cp-rc",
     ), unsafe_allow_html=True)
 
 with c3:
