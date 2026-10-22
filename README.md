@@ -1,3 +1,16 @@
+## Simple Program Workflow
+
+1. **IP Collection:** Retrieves recently reported IP addresses with an Abuse Confidence Score of 100 from AbuseIPDB.
+2. **Enrichment & Classification:** Collects ASN, provider, location, IP type, and proxy/VPN/Tor indicators. 
+IPs are checked against allowlists and classified into cloud, CDN, Bulletproof Hosting, Grey Hosting, and anonymization categories.
+3. **Storage & Visualization:** Stores the results in SQLite and displays them in the Streamlit dashboard, 
+including selected MITRE ATT&CK mappings.
+4. **ASN Research:** Selected hosting providers are investigated using WHOIS/RDAP, DNS, routing, RPKI, and prefix-history data.
+5. **AI Risk Assessment:** Gemini evaluates the collected evidence and generates a risk score, verdict, 
+and supporting positive and negative factors.
+
+
+
 # ThreatWatch – Modulbeschreibungen
 
 ---
