@@ -43,6 +43,7 @@ are performed. The analysis also investigates whether providers accept cryptocur
 
 The final risk analysis is performed using the Gemini API with URL Context and Google Search.
 
+
 **5. AI-Powered Risk Assessment:**
 
 Gemini evaluates the collected information and generates a risk score, a risk classification, and an explanation based on 
@@ -87,6 +88,61 @@ Es wir die abschließende Risikoanalyse wird mit der Gemini API unter Verwendung
 
 **5. KI-gestützte Risikobewertung:**  Gemini bewertet die gesammelten Informationen und erstellt einen Risikoscore, eine 
 Risikoeinstufung sowie eine Begründung anhand positiver und negativer Faktoren.
+
+## ASN- und IP-Analyse detailer:
+
+Für die detaillierte Analyse von ASNs, IP-Adressen und Hosting-Providern werden RIPE Stat APIs, RDAP, IANA und DNS-Abfragen verwendet. 
+Die gesammelten Daten werden anschließend mit der Gemini API ausgewertet.
+
+**RIPE Stat API**
+
+RIPE Stat stellt Informationen über IP-Adressen, autonome Systeme (ASNs), Routing und Netzwerkregistrierungen bereit. 
+Die Daten werden über HTTP-API-Abfragen abgerufen.
+
+| API-Endpunkt | Zweck |
+|---|---|
+| `whois` | Ermittelt Registrierungs-, Organisations- und Netzwerkinformationen zu einer ASN oder IP-Adresse. |
+| `abuse-contact-finder` | Ermittelt die zuständigen Abuse-Kontaktadressen eines Netzwerks. |
+| `routing-status` | Liefert Informationen zum Routingstatus, zur Sichtbarkeit und zur Anzahl angekündigter Prefixes. |
+| `prefix-count` | Zeigt die Entwicklung der angekündigten Prefix-Anzahl im Zeitverlauf. |
+| `network-info` | Ermittelt das angekündigte Prefix und die Origin-ASN einer IP-Adresse. |
+| `rpki-validation` | Überprüft, ob die Ankündigung eines Prefixes durch die angegebene Origin-ASN gemäß RPKI autorisiert ist. |
+
+**RDAP und IANA**
+
+**RDAP (Registration Data Access Protocol)** stellt strukturierte Registrierungsdaten zu ASNs und IP-Adressbereichen im JSON-Format bereit. 
+Dazu gehören beispielsweise Organisationsinformationen, Netzwerkbereiche, Status sowie Registrierungs- und Änderungsdaten.
+
+**IANA (Internet Assigned Numbers Authority)** wird verwendet, um über RDAP-Bootstrap-Dateien den zuständigen 
+RDAP-Server für eine ASN oder IP-Adresse zu ermitteln.
+
+- `asn.json`: Ermittelt den zuständigen RDAP-Server für eine ASN.
+- `ipv4.json`: Ermittelt den zuständigen RDAP-Server für IPv4-Adressen.
+- `ipv6.json`: Ermittelt den zuständigen RDAP-Server für IPv6-Adressen.
+
+Anschließend werden die Registrierungsdaten direkt beim zuständigen RDAP-Server abgefragt.
+
+**DNS-Abfragen**
+
+Zur Untersuchung der Netzwerk- und Domainzugehörigkeit werden folgende DNS-Abfragen durchgeführt:
+
+| Abfragetyp | Zweck |
+|---|---|
+| `A` | Ermittelt die IPv4-Adresse einer Domain. |
+| `MX` | Ermittelt die zuständigen Mailserver einer Domain. |
+| `PTR` | Ermittelt den Reverse-DNS-Hostnamen einer IP-Adresse. |
+| `FCrDNS` | Überprüft, ob ein über PTR ermittelter Hostname wieder auf die ursprüngliche IP-Adresse verweist. |
+
+**KI-gestützte Analyse mit Gemini**
+
+Die gesammelten ASN-, Registrierungs-, Routing-, RPKI- und DNS-Daten werden zusammen mit der Homepage-URL des Hosting-Providers an die Gemini API übermittelt.
+
+- **URL Context:** Ermöglicht die Analyse der angegebenen Homepage.
+- **Google Search:** Ermöglicht zusätzliche Recherchen zu öffentlich verfügbaren Informationen über den Provider und seine Infrastruktur.
+
+Gemini bewertet die gesammelten Informationen und erstellt eine Risikoeinstufung mit Risikoscore, positiven und negativen Faktoren sowie einer zusammenfassenden Begründung.
+
+**Hinweis:** RPKI überprüft die Autorisierung von BGP-Routen und ist kein direkter Indikator dafür, ob eine IP-Adresse bösartig ist.
 
 
 
