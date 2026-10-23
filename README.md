@@ -1,13 +1,92 @@
-## Simple Program Workflow
+## Simple Program Workflow English:
 
-1. **IP Collection:** Retrieves recently reported IP addresses with an Abuse Confidence Score of 100 from AbuseIPDB.
-2. **Enrichment & Classification:** Collects ASN, provider, location, IP type, and proxy/VPN/Tor indicators. 
-IPs are checked against allowlists and classified into cloud, CDN, Bulletproof Hosting, Grey Hosting, and anonymization categories.
-3. **Storage & Visualization:** Stores the results in SQLite and displays them in the Streamlit dashboard, 
-including selected MITRE ATT&CK mappings.
-4. **ASN Research:** Selected hosting providers are investigated using WHOIS/RDAP, DNS, routing, RPKI, and prefix-history data.
-5. **AI Risk Assessment:** Gemini evaluates the collected evidence and generates a risk score, verdict, 
-and supporting positive and negative factors.
+**1. IP Collection:**
+
+Retrieves recently reported IP addresses with an Abuse Confidence Score of 100 from AbuseIPDB.
+
+AbuseIPDB is a global database for reporting and querying IP addresses in real time that have been 
+associated with cyberattacks such as password brute-force attempts or spam. 
+System administrators use this live data to identify suspicious IP addresses and protect their networks and user accounts 
+against password-based attacks.
+
+**2. Data Collection and Classification:**
+
+Collects ASN, provider, hostname, location, IP type (Hosting, Business, Wireless, Residential), and proxy/VPN/Tor indicators.
+Based on these and other characteristics, IP addresses are classified according to their anonymization methods and IP types.
+
+Further classification is performed based on the assignment of IP addresses to specific providers and organizations. 
+The IP addresses are checked against lists of ASNs and IP address ranges and assigned to categories such as Trusted Scanners,
+trusted cloud providers (e.g., Azure, AWS, and Google Cloud), CDN, Bulletproof Hosting, and Grey Hosting.
+
+Bulletproof Hosting refers to hosting services that deliberately tolerate illegal or malicious content and resist enforcement
+actions or complaints, for example, those concerning copyright infringement. Data from sources such as Spamhaus.org is used to 
+help identify such providers.
+
+Legitimate organizations that scan the Internet exclusively for informational and research purposes are classified as 
+Trusted Scanners. Since their activities are sometimes mistakenly reported as attacks, their IP addresses may also receive 
+an Abuse Confidence Score of 100 and be included in the system.
+
+IP addresses that cannot be clearly assigned to any of the aforementioned categories are classified as Grey Hosting. 
+This category enables hosting providers that have not yet been clearly classified to be investigated in greater detail 
+using the integrated ASN Research module.
+
+**3. Storage and Visualization:**
+
+Stores the results in SQLite and displays them in the Streamlit dashboard, including selected MITRE ATT&CK mappings such as 
+Resource Development (TA0042), Reconnaissance (TA0043), and their associated sub-techniques.
+
+**4. ASN Analysis:**
+
+For ASN, IP, and provider research, RIPE Stat APIs (WHOIS, abuse-contact-finder, routing-status, prefix-count, network-info, 
+and rpki-validation) and RDAP queries are used to retrieve registration data. Additional DNS queries (A, MX, PTR, and FCrDNS) 
+are performed. The analysis also investigates whether providers accept cryptocurrency payments.
+
+The final risk analysis is performed using the Gemini API with URL Context and Google Search.
+
+**5. AI-Powered Risk Assessment:**
+
+Gemini evaluates the collected information and generates a risk score, a risk classification, and an explanation based on 
+positive and negative factors.
+
+## Simple Program Workflow German:
+
+**1. IP-Erfassung:** Ruft kürzlich gemeldete IP-Adressen mit einem Abuse Confidence Score von 100 von AbuseIPDB ab.
+AbuseIPDB ist eine globale Datenbank zur Meldung und Abfrage von IP-Adressen in Echtzeit, die an Cyberangriffen wie Kennwort-Brute-Force-Versuchen 
+oder Spam beteiligt sind. Systemadministratoren nutzen diese Live-Daten, um verdächtige IP-Adressen zu identifizieren und ihr 
+Netzwerk sowie Benutzerkonten vor Kennwort-Angriffen zu schützen.
+
+**2. Datenerfassung und Klassifizierung:** Erfasst ASN, Provider, Hostname, Standort, IP-Typ (Hosting, Business, Wireless, 
+Residential) sowie Proxy-/VPN-/Tor-Indikatoren. Anhand dieser und weiterer Merkmale werden die IP-Adressen nach Anonymisierungsmethoden 
+und IP-Typen klassifiziert.
+
+Eine weitere Klassifizierung erfolgt anhand der Zuordnung zu bestimmten Providern und Organisationen. Dazu werden die IP-Adressen 
+anhand von Listen mit ASNs und IP-Adressblöcken überprüft und Kategorien wie Trusted Scanner, vertrauenswürdige Cloud-Provider 
+(z. B. Azure, AWS und Google Cloud), CDN, Bulletproof Hosting und Grey Hosting zugeordnet.
+
+Bulletproof Hosting bezeichnet Hosting-Dienste, die illegale oder bösartige Inhalte bewusst tolerieren und sich behördlichen 
+Maßnahmen oder Beschwerden, beispielsweise wegen Urheberrechtsverletzungen, widersetzen. Zur Identifizierung solcher Anbieter 
+werden unter anderem Daten von Spamhaus.org verwendet.
+
+Legitime Organisationen, die das Internet ausschließlich zu Informations- und Forschungszwecken scannen, werden als Trusted Scanner 
+bezeichnet. Da deren Aktivitäten gelegentlich fälschlicherweise als Angriffe gemeldet werden, können ihre IP-Adressen ebenfalls 
+einen Abuse Confidence Score von 100 erhalten und in das System aufgenommen werden.
+
+IP-Adressen, die keiner der genannten Kategorien eindeutig zugeordnet werden können, werden als Grey Hosting klassifiziert. 
+Diese Kategorie ermöglicht es, bislang nicht eindeutig eingestufte Hosting-Provider anschließend mit dem 
+integrierten ASN-Research-Modul genauer zu untersuchen.
+
+
+**3. Speicherung und Visualisierung:**  Speichert die Ergebnisse in SQLite und stellt sie im Streamlit-Dashboard dar, 
+einschließlich ausgewählter MITRE-ATT&CK-Zuordnungen wie Resource Development (TA0042), und Reconnaissance (TA0043) und 
+dazu gehörige Submethoden.
+
+**4. ASN-Analyse:** Für die ASN, IP, Provider-Recherche werden RIPE-Stat-APIs (WHOIS, abuse-contact-finder, routing-status, 
+prefix-count, network-info, rpki-validation) sowie RDAP-Abfragen zur Ermittlung von Registrierungsdaten verwendet. 
+Ergänzend erfolgen DNS-Abfragen (A, MX, PTR, FCrDNS); Es wird auch untersucht ob Provider Coin Zahlungen akzeptiert. 
+Es wir die abschließende Risikoanalyse wird mit der Gemini API unter Verwendung von URL Context und Google Search durchgeführt.
+
+**5. KI-gestützte Risikobewertung:**  Gemini bewertet die gesammelten Informationen und erstellt einen Risikoscore, eine 
+Risikoeinstufung sowie eine Begründung anhand positiver und negativer Faktoren.
 
 
 
@@ -113,7 +192,7 @@ Sicherheitsuntersuchung ausgewählt werden.
 ## `pages/mitre_attack.py`
 
 Diese Seite ordnet ausgewählte Analyseergebnisse den relevanten Taktiken des MITRE ATT&CK Frameworks zu. 
-Berücksichtigt werden beispielsweise Resource Development (TA0042), Command and Control (TA0011) und Reconnaissance (TA0043).
+Berücksichtigt werden beispielsweise Resource Development (TA0042), und Reconnaissance (TA0043).
 Die Zuordnung unterstützt die strukturierte Einordnung möglicher Bedrohungsszenarien und zeigt, welche IP-Adressen mit den
 jeweiligen Kategorien verbunden sind. Die Zuordnung dient der Analyse und stellt für sich allein keinen Nachweis einer konkreten 
 Angriffshandlung dar.
