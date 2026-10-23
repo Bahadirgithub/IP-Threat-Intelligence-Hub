@@ -89,7 +89,7 @@ Es wir die abschließende Risikoanalyse wird mit der Gemini API unter Verwendung
 **5. KI-gestützte Risikobewertung:**  Gemini bewertet die gesammelten Informationen und erstellt einen Risikoscore, eine 
 Risikoeinstufung sowie eine Begründung anhand positiver und negativer Faktoren.
 
-## ASN- und IP-Analyse detailer:
+## ASN- und IP-Analyse im Detail:
 
 Für die detaillierte Analyse von ASNs, IP-Adressen und Hosting-Providern werden RIPE Stat APIs, RDAP, IANA und DNS-Abfragen verwendet. 
 Die gesammelten Daten werden anschließend mit der Gemini API ausgewertet.
